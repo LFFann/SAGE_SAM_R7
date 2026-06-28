@@ -97,6 +97,7 @@ def main():
     save_json(collect_environment(), out / "environment.json")
     save_json({"source": "standalone SAGE_SAM_R6 generated from KnowSAM-style UNet and R3 engineering conventions"}, out / "source_versions.json")
     trainer = SAGESAMR6Trainer(config)
+    save_yaml(config, out / "resolved_config.yaml")
     if args.resume:
         trainer.load_checkpoint(args.resume)
     if args.dry_run:

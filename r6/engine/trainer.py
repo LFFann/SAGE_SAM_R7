@@ -193,6 +193,8 @@ class SAGESAMR6Trainer:
         self.start_iteration = 0
         self.calibration_iter = None
         self.calibration_update_count = 0
+        self.val_collapse_count = 0
+        self.stop_requested = False
         self._log_trainability()
         self._build_data()
 
@@ -256,6 +258,7 @@ class SAGESAMR6Trainer:
             self.logger.warning("Calibration split shares labeled samples because labeled count is too small")
         self.labeled_ds = Subset(labeled_all, train_idx)
         self.calibration_ds = Subset(labeled_all, cal_idx)
+        self._configure_labeled_foreground_prior(labeled_all)
         self.unlabeled_ds = SegmentationDataset2D(split=cfg.get("unlabeled_subdir", "unlabeled"), has_mask=False, **common)
         self.val_ds = SegmentationDataset2D(split=cfg.get("val_subdir", "val"), has_mask=True, **common)
         self.test_ds = SegmentationDataset2D(split=cfg.get("test_subdir", "test"), has_mask=True, **common)
@@ -277,6 +280,45 @@ class SAGESAMR6Trainer:
         self.val_loader = DataLoader(self.val_ds, batch_size=self.config.get("eval", {}).get("batch_size", 1), shuffle=False, num_workers=0)
         self.calibration_loader = DataLoader(self.calibration_ds, batch_size=self.config.get("eval", {}).get("batch_size", 1), shuffle=False, num_workers=0)
         self.calibration_iter = cycle(self.calibration_loader)
+
+    def _configure_labeled_foreground_prior(self, labeled_all: SegmentationDataset2D):
+        pseudo_cfg = self.config.setdefault("pseudo", {})
+        if not bool(pseudo_cfg.get("use_labeled_foreground_prior", False)):
+            return
+        counts = torch.zeros(self.num_classes, dtype=torch.float64)
+        for rec in labeled_all.records:
+            mask = labeled_all._load_mask(rec["mask_path"])
+            valid = mask != self.ignore_index
+            if valid.any():
+                counts += torch.bincount(mask[valid].clamp(0, self.num_classes - 1).reshape(-1), minlength=self.num_classes).double()
+        total = counts.sum().clamp_min(1.0)
+        priors = (counts / total).tolist()
+        multiplier = float(pseudo_cfg.get("foreground_prior_cap_multiplier", 4.0))
+        min_cap = float(pseudo_cfg.get("foreground_prior_min_cap", pseudo_cfg.get("min_fg_pixels_per_class_ratio", 0.0)))
+        max_cap = float(pseudo_cfg.get("foreground_prior_max_cap", 1.0))
+        old_caps = pseudo_cfg.get("max_fg_candidate_ratio_per_class", [1.0 for _ in range(self.num_classes)])
+        new_caps = []
+        for cls in range(self.num_classes):
+            old = self._class_trust_value({"max_fg_candidate_ratio_per_class": old_caps}, "max_fg_candidate_ratio_per_class", cls, 1.0)
+            if cls == 0:
+                new_caps.append(float(old))
+                continue
+            prior_cap = min(max_cap, max(min_cap, float(priors[cls]) * multiplier))
+            new_caps.append(min(float(old), prior_cap))
+        pseudo_cfg["labeled_class_prior"] = priors
+        pseudo_cfg["max_fg_candidate_ratio_per_class"] = new_caps
+        append_jsonl(
+            self.output_dir / "diagnostics.jsonl",
+            {
+                "event": "labeled_foreground_prior_caps",
+                "class_pixel_counts": [float(x) for x in counts.tolist()],
+                "class_prior": priors,
+                "max_fg_candidate_ratio_per_class": new_caps,
+                "foreground_prior_cap_multiplier": multiplier,
+            },
+        )
+        if hasattr(self, "logger"):
+            self.logger.info("labeled foreground priors=%s capped_fg_ratios=%s", priors, new_caps)
 
     def fit_calibrator(self):
         self.logger.info("Prompt reliability calibration is online; skipping random pre-training fit")
@@ -385,10 +427,19 @@ class SAGESAMR6Trainer:
                     sam=logs["sam_valid_ratio"],
                     **last_val_metrics,
                 )
+                if self.stop_requested:
+                    self.logger.warning("early stop requested at iteration=%d after validation collapse guard", iteration)
+                    break
         progress.close()
         latest = self.output_dir / "checkpoints" / "latest.pth"
-        export_deploy_payload(latest, self.output_dir / "checkpoints" / "deploy_student.pth")
-        self.logger.info("train_end latest=%s deploy=%s", latest, self.output_dir / "checkpoints" / "deploy_student.pth")
+        best = self.output_dir / "checkpoints" / "best_val_dice.pth"
+        deploy_src = best if best.exists() and bool(self.config["train"].get("deploy_best_checkpoint", True)) else latest
+        export_deploy_payload(deploy_src, self.output_dir / "checkpoints" / "deploy_student.pth")
+        append_jsonl(
+            self.output_dir / "diagnostics.jsonl",
+            {"event": "deploy_exported", "source": str(deploy_src), "path": str(self.output_dir / "checkpoints" / "deploy_student.pth")},
+        )
+        self.logger.info("train_end latest=%s deploy_source=%s deploy=%s", latest, deploy_src, self.output_dir / "checkpoints" / "deploy_student.pth")
         return latest
 
     def _r6_stage_weights(self, iteration: int, fast_slow_agreement: float):
@@ -467,14 +518,19 @@ class SAGESAMR6Trainer:
         max_bg = float(cfg.get("max_background_hard_ratio", 0.45))
         min_sam_support = float(cfg.get("min_sam_foreground_support_ratio", 0.0))
         max_sam_gate_without_support = float(cfg.get("max_sam_gate_without_support", 1.0))
+        max_sam_gate_to_support = float(cfg.get("max_sam_gate_to_support_ratio", 0.0))
+        sam_support_floor = float(cfg.get("sam_support_ratio_floor", 0.005))
         low_candidate = candidate_fg < min_candidate_fg
         high_candidate = candidate_fg > max_candidate_fg
         high_negative = safe_neg > max_safe_neg
         high_background = background_hard > max_bg
         low_sam_support = sam_support < min_sam_support
-        sam_overgate = low_sam_support and sam_gate > max_sam_gate_without_support
+        support_den = max(sam_support, sam_support_floor)
+        sam_gate_too_wide = max_sam_gate_to_support > 0.0 and sam_gate > max_sam_gate_to_support * support_den
+        sam_overgate = low_sam_support and (sam_gate > max_sam_gate_without_support or sam_gate_too_wide)
         low_class = False
         high_class = False
+        pre_ceiling_flood = False
         high_class_negative = False
         for cls in fg_classes:
             if 0 < cls < len(per_class_fg):
@@ -482,6 +538,9 @@ class SAGESAMR6Trainer:
                 low_class = low_class or cls_fg < min_class_fg
                 cls_max = self._class_trust_value(cfg, "max_class_foreground_ratio", cls, 1.0)
                 high_class = high_class or cls_fg > cls_max
+                before = float(stats.get(f"foreground_ceiling_before_ratio_class{cls}", cls_fg))
+                max_before = self._class_trust_value(cfg, "max_pre_ceiling_foreground_ratio", cls, 1.0)
+                pre_ceiling_flood = pre_ceiling_flood or before > max_before
             if 0 < cls < len(per_class_neg):
                 high_class_negative = high_class_negative or float(per_class_neg[cls]) > max_class_neg
 
@@ -493,6 +552,7 @@ class SAGESAMR6Trainer:
             or high_negative
             or high_class_negative
             or high_background
+            or pre_ceiling_flood
             or (sam_overgate and bool(cfg.get("sam_overgate_marks_unsafe", True)))
         )
         trust_unsup_scale = float(cfg.get("unsafe_unsup_scale", 0.25)) if unsafe else 1.0
@@ -527,7 +587,9 @@ class SAGESAMR6Trainer:
             "trust_high_class_negative": 1.0 if high_class_negative else 0.0,
             "trust_high_background": 1.0 if high_background else 0.0,
             "trust_low_sam_support": 1.0 if low_sam_support else 0.0,
+            "trust_sam_gate_too_wide": 1.0 if sam_gate_too_wide else 0.0,
             "trust_sam_overgate": 1.0 if sam_overgate else 0.0,
+            "trust_pre_ceiling_flood": 1.0 if pre_ceiling_flood else 0.0,
             "trust_unsup_scale": trust_unsup_scale,
             "trust_sam_scale": trust_sam_scale,
             "trust_negative_scale": trust_negative_scale,
@@ -939,8 +1001,10 @@ class SAGESAMR6Trainer:
             calibration_update_count=self.calibration_update_count,
         )
         append_jsonl(self.output_dir / "diagnostics.jsonl", {"event": "checkpoint_saved", "iteration": iteration, "path": str(latest)})
-        if metrics["avg_dice"] >= self.best_metrics.get("avg_dice", -1):
+        previous_best = float(self.best_metrics.get("avg_dice", -1.0))
+        if metrics["avg_dice"] >= previous_best:
             self.best_metrics["avg_dice"] = metrics["avg_dice"]
+            self.val_collapse_count = 0
             save_checkpoint(
                 ckpt_dir / "best_val_dice.pth",
                 iteration=iteration,
@@ -957,6 +1021,27 @@ class SAGESAMR6Trainer:
                 calibration_update_count=self.calibration_update_count,
             )
             append_jsonl(self.output_dir / "diagnostics.jsonl", {"event": "best_updated", "metric": "avg_dice", "iteration": iteration})
+        else:
+            train_cfg = self.config.get("train", {})
+            collapse_enabled = bool(train_cfg.get("stop_on_val_collapse", False))
+            collapse_delta = float(train_cfg.get("val_collapse_delta", 0.15))
+            collapse_min_iter = int(train_cfg.get("val_collapse_min_iter", 0))
+            if collapse_enabled and iteration >= collapse_min_iter and previous_best > 0.0 and previous_best - float(metrics["avg_dice"]) >= collapse_delta:
+                self.val_collapse_count += 1
+                append_jsonl(
+                    self.output_dir / "diagnostics.jsonl",
+                    {
+                        "event": "val_collapse_guard",
+                        "iteration": iteration,
+                        "avg_dice": float(metrics["avg_dice"]),
+                        "best_avg_dice": previous_best,
+                        "count": int(self.val_collapse_count),
+                    },
+                )
+                if self.val_collapse_count >= int(train_cfg.get("val_collapse_patience", 2)):
+                    self.stop_requested = True
+            else:
+                self.val_collapse_count = 0
         hd = metrics.get("avg_hd95", float("inf"))
         hd_key = hd if not math.isnan(hd) else float("inf")
         if hd_key <= self.best_metrics.get("avg_hd95", float("inf")):

@@ -40,14 +40,20 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
 
     assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned"
     assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
+    assert cfg["train"]["deploy_best_checkpoint"] is True
+    assert cfg["train"]["stop_on_val_collapse"] is True
     assert cfg["sam"]["peft_type"] == "adapter"
     assert cfg["sam"]["train_mask_decoder"] is False
     assert cfg["sam"]["freeze_prompt_encoder"] is True
     assert cfg["pseudo"]["sam_role"] == "verifier"
     assert cfg["pseudo"]["bounded_safe_negative"] is True
     assert cfg["pseudo"]["bounded_foreground_candidates"] is True
+    assert cfg["pseudo"]["use_labeled_foreground_prior"] is True
+    assert cfg["pseudo"]["foreground_prior_cap_multiplier"] <= 4.0
+    assert cfg["pseudo"]["max_foreground_candidate_ratio"] <= 0.05
     assert cfg["pseudo"]["max_safe_negative_ratio_per_class"] <= 0.25
-    assert cfg["pseudo"]["max_fg_candidate_ratio_per_class"][1] <= 0.14
+    assert cfg["pseudo"]["max_fg_candidate_ratio_per_class"][1] <= 0.06
+    assert cfg["pseudo"]["min_fg_pixels_per_class_ratio"] <= 0.006
     assert cfg["pseudo"]["max_background_from_ceiling_ratio"] <= 0.10
     assert cfg["pseudo"]["background_candidate_min_confidence"] >= 0.65
     assert cfg["pseudo"]["sam_structure_mask_min_support"] >= 0.08
@@ -56,9 +62,12 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["trust"]["max_class_foreground_ratio"][1] <= 0.14
     assert cfg["trust"]["min_sam_foreground_support_ratio"] >= 0.02
     assert cfg["trust"]["max_sam_gate_without_support"] <= 0.50
+    assert cfg["trust"]["max_sam_gate_to_support_ratio"] <= 6.0
+    assert cfg["trust"]["max_pre_ceiling_foreground_ratio"][1] <= 0.30
     assert cfg["trust"]["enabled"] is True
     assert cfg["trust"]["disable_correlation_when_unsafe"] is True
-    assert cfg["r6"]["stage1_unsup_max_scale"] <= 0.25
+    assert cfg["r6"]["foreground_grounding_start"] >= 2000
+    assert cfg["r6"]["stage1_unsup_max_scale"] <= 0.10
 
 
 def test_v100_launch_scripts_are_parameterized():
