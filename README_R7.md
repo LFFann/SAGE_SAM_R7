@@ -13,6 +13,11 @@ changes the semi-supervised loop:
 3. A dynamic trust curriculum disables correlation/locality propagation and
    suppresses negative SSL when the current pseudo-targets show foreground
    starvation, background takeover, or class-specific safe-negative saturation.
+4. R7.1 adds dual-bound foreground safety: foreground candidates have both a
+   lower participation floor and an upper flooding ceiling. Pixels removed by
+   the ceiling may return as bounded high-confidence background candidates, so
+   the unlabeled objective cannot collapse into all-background or all-foreground
+   supervision.
 
 V100 training:
 
@@ -38,8 +43,12 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `per_class_foreground_participation_ratio`
 - `per_class_safe_negative_ratio`
 - `safe_negative_pixel_ratio`
+- `foreground_ceiling_flood_class_count`
+- `background_from_ceiling_ratio`
 - `background_hard_ratio`
 - `trust_unsafe`
+- `trust_high_candidate`
+- `trust_high_class`
 - `sam_verifier_score_mean`
 - `loss_sam_kd`
 

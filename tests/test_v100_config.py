@@ -45,9 +45,14 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["sam"]["freeze_prompt_encoder"] is True
     assert cfg["pseudo"]["sam_role"] == "verifier"
     assert cfg["pseudo"]["bounded_safe_negative"] is True
+    assert cfg["pseudo"]["bounded_foreground_candidates"] is True
     assert cfg["pseudo"]["max_safe_negative_ratio_per_class"] <= 0.25
+    assert cfg["pseudo"]["max_fg_candidate_ratio_per_class"][1] <= 0.14
+    assert cfg["trust"]["max_candidate_foreground_ratio"] <= 0.25
+    assert cfg["trust"]["max_class_foreground_ratio"][1] <= 0.14
     assert cfg["trust"]["enabled"] is True
     assert cfg["trust"]["disable_correlation_when_unsafe"] is True
+    assert cfg["r6"]["stage1_unsup_max_scale"] <= 0.25
 
 
 def test_v100_launch_scripts_are_parameterized():

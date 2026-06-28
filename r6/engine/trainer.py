@@ -408,10 +408,12 @@ class SAGESAMR6Trainer:
                 "low_agreement": 1.0 if low_agreement else 0.0,
             }
         if iteration < corr_start:
+            stage1_unsup = min(agreement_scale, float(cfg.get("stage1_unsup_max_scale", 1.0)))
+            stage1_sam = min(agreement_scale, float(cfg.get("stage1_sam_max_scale", stage1_unsup)))
             return {
                 "stage": 1.0,
-                "unsup": agreement_scale,
-                "sam": agreement_scale,
+                "unsup": stage1_unsup,
+                "sam": stage1_sam,
                 "correlation": 0.0,
                 "locality": 0.0,
                 "low_agreement": 1.0 if low_agreement else 0.0,
@@ -455,21 +457,27 @@ class SAGESAMR6Trainer:
         fg_classes = [int(c) for c in self.config.get("pseudo", {}).get("foreground_classes", list(range(1, self.num_classes)))]
         min_candidate_fg = float(cfg.get("min_candidate_foreground_ratio", 0.03))
         min_class_fg = float(cfg.get("min_class_foreground_ratio", 0.005))
+        max_candidate_fg = float(cfg.get("max_candidate_foreground_ratio", 1.0))
         max_safe_neg = float(cfg.get("max_safe_negative_pixel_ratio", 0.65))
         max_class_neg = float(cfg.get("max_class_safe_negative_ratio", 0.50))
         max_bg = float(cfg.get("max_background_hard_ratio", 0.45))
         low_candidate = candidate_fg < min_candidate_fg
+        high_candidate = candidate_fg > max_candidate_fg
         high_negative = safe_neg > max_safe_neg
         high_background = background_hard > max_bg
         low_class = False
+        high_class = False
         high_class_negative = False
         for cls in fg_classes:
             if 0 < cls < len(per_class_fg):
-                low_class = low_class or float(per_class_fg[cls]) < min_class_fg
+                cls_fg = float(per_class_fg[cls])
+                low_class = low_class or cls_fg < min_class_fg
+                cls_max = self._class_trust_value(cfg, "max_class_foreground_ratio", cls, 1.0)
+                high_class = high_class or cls_fg > cls_max
             if 0 < cls < len(per_class_neg):
                 high_class_negative = high_class_negative or float(per_class_neg[cls]) > max_class_neg
 
-        unsafe = bool(low_candidate or low_class or high_negative or high_class_negative or high_background)
+        unsafe = bool(low_candidate or high_candidate or low_class or high_class or high_negative or high_class_negative or high_background)
         trust_unsup_scale = float(cfg.get("unsafe_unsup_scale", 0.25)) if unsafe else 1.0
         trust_sam_scale = float(cfg.get("unsafe_sam_scale", trust_unsup_scale)) if unsafe else 1.0
         trust_negative_scale = float(cfg.get("unsafe_negative_scale", 0.0)) if unsafe else 1.0
@@ -492,13 +500,26 @@ class SAGESAMR6Trainer:
             "trust_gate_active": 1.0,
             "trust_unsafe": 1.0 if unsafe else 0.0,
             "trust_low_candidate": 1.0 if low_candidate else 0.0,
+            "trust_high_candidate": 1.0 if high_candidate else 0.0,
             "trust_low_class": 1.0 if low_class else 0.0,
+            "trust_high_class": 1.0 if high_class else 0.0,
             "trust_high_negative": 1.0 if high_negative else 0.0,
             "trust_high_class_negative": 1.0 if high_class_negative else 0.0,
             "trust_high_background": 1.0 if high_background else 0.0,
             "trust_unsup_scale": trust_unsup_scale,
             "trust_negative_scale": trust_negative_scale,
         }
+
+    @staticmethod
+    def _class_trust_value(config: dict, key: str, cls: int, default: float) -> float:
+        value = config.get(key, default)
+        if isinstance(value, dict):
+            return float(value.get(cls, value.get(str(cls), default)))
+        if isinstance(value, (list, tuple)):
+            if cls < len(value):
+                return float(value[cls])
+            return float(value[-1]) if value else float(default)
+        return float(value)
 
     def train_one_iter(self, batch_l, batch_u, iteration: int, update: bool = True, step_optimizer: bool = True):
         self.student.train()

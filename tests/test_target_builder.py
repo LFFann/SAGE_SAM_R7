@@ -182,6 +182,42 @@ def test_r7_bounded_negative_caps_rare_class_suppression():
     assert targets["stats"]["per_class_foreground_participation_ratio"][2] >= 0.0199
 
 
+def test_r7_foreground_ceiling_blocks_class1_candidate_flooding():
+    cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
+    teacher_prob = torch.full((1, 3, 10, 10), 0.02)
+    teacher_prob[:, 0] = 0.35
+    teacher_prob[:, 1] = 0.60
+    teacher_prob[:, 2] = 0.05
+    sam_prob = torch.full_like(teacher_prob, 0.01)
+    sam_prob[:, 1] = 0.02
+
+    targets = build_set_valued_targets(
+        {"mean_prob": teacher_prob},
+        {"valid": True, "sam_prob": sam_prob, "prompt_quality": torch.ones(1, 3), "sam_iou": torch.ones(1, 3)},
+        cal,
+        {
+            "_iteration": 1800,
+            "foreground_classes": [1, 2],
+            "sam_role": "verifier",
+            "bounded_foreground_candidates": True,
+            "max_fg_candidate_ratio_per_class": [0.0, 0.12, 0.08],
+            "min_fg_pixels_per_class_ratio": 0.01,
+            "use_background_from_foreground_ceiling": True,
+            "background_candidate_min_confidence": 0.30,
+            "max_background_from_ceiling_ratio": 0.25,
+            "bounded_safe_negative": True,
+            "safe_negative_to_positive_ratio": 1.0,
+            "max_safe_negative_ratio_per_class": 0.10,
+        },
+    )
+
+    assert targets["stats"]["foreground_ceiling_active"] == 1.0
+    assert targets["stats"]["foreground_ceiling_flood_class_count"] >= 1.0
+    assert targets["stats"]["soft_fg_ratio_class1"] <= 0.12
+    assert targets["stats"]["candidate_foreground_ratio"] <= 0.20
+    assert targets["stats"]["background_from_ceiling_ratio"] > 0.0
+
+
 def test_r6_collapse_sentinel_blocks_background_takeover_and_forces_fg_candidates():
     cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
     cal.teacher_q = torch.tensor([0.50, 0.50, 0.50])

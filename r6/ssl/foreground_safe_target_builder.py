@@ -54,6 +54,104 @@ def _topk_mask(score: torch.Tensor, eligible: torch.Tensor, k: int) -> torch.Ten
     return out
 
 
+def _class_value(config: dict, key: str, cls: int, default: float) -> float:
+    value = config.get(key, default)
+    if isinstance(value, dict):
+        return float(value.get(cls, value.get(str(cls), default)))
+    if isinstance(value, (list, tuple)):
+        if cls < len(value):
+            return float(value[cls])
+        return float(value[-1]) if value else float(default)
+    return float(value)
+
+
+def _foreground_participation_stats(singleton_label, singleton_mask, candidate_set, ambiguous_mask, fg_classes):
+    stats: dict[str, float] = {
+        "background_hard_ratio": float(((singleton_mask & (singleton_label == 0)).float().mean()).detach()),
+    }
+    for cls in fg_classes:
+        if 0 < cls < candidate_set.shape[1]:
+            stats[f"hard_fg_ratio_class{cls}"] = float(((singleton_mask & (singleton_label == cls)).float().mean()).detach())
+            stats[f"soft_fg_ratio_class{cls}"] = float(((ambiguous_mask & candidate_set[:, cls]).float().mean()).detach())
+    return stats
+
+
+def _cap_foreground_candidate_set(
+    candidate_set: torch.Tensor,
+    singleton_label: torch.Tensor,
+    singleton_mask: torch.Tensor,
+    ambiguous_mask: torch.Tensor,
+    foreground_score: torch.Tensor,
+    teacher_prob: torch.Tensor,
+    verifier_score: torch.Tensor,
+    fg_classes: list[int],
+    config: dict,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+    if not bool(config.get("bounded_foreground_candidates", False)):
+        return candidate_set, singleton_label, singleton_mask, ambiguous_mask, {"foreground_ceiling_active": 0.0}
+
+    total_pixels = int(singleton_mask.numel())
+    min_ratio = float(config.get("min_fg_pixels_per_class_ratio", config.get("min_fg_ratio_per_class", 0.0)))
+    min_pixels_cfg = int(config.get("min_fg_pixels_per_class", 0))
+    old_fg_any = candidate_set[:, 1:].any(dim=1) if candidate_set.shape[1] > 1 else torch.zeros_like(singleton_mask)
+    ceiling_stats: dict[str, float] = {"foreground_ceiling_active": 1.0}
+    flood_classes = 0
+    verifier_weight = float(config.get("foreground_ceiling_verifier_weight", 0.15))
+
+    for cls in fg_classes:
+        if not (0 < cls < candidate_set.shape[1]):
+            continue
+        hard_cls = singleton_mask & (singleton_label == cls)
+        soft_cls = ambiguous_mask & candidate_set[:, cls]
+        current = int((hard_cls | soft_cls).sum())
+        min_pixels = max(min_pixels_cfg, int(round(total_pixels * min_ratio)))
+        max_ratio = _class_value(config, "max_fg_candidate_ratio_per_class", cls, float(config.get("max_foreground_candidate_ratio", 1.0)))
+        max_pixels = max(min_pixels, int(round(total_pixels * max_ratio)))
+        max_pixels = max(0, min(max_pixels, total_pixels))
+        hard_count = int(hard_cls.sum())
+        score = foreground_score[:, cls] + verifier_weight * verifier_score
+        if hard_count > max_pixels and bool(config.get("foreground_ceiling_demote_hard", True)):
+            keep_hard = _topk_mask(score, hard_cls, max_pixels)
+            drop_hard = hard_cls & ~keep_hard
+            singleton_mask = singleton_mask & ~drop_hard
+            candidate_set[:, cls] = candidate_set[:, cls] & ~drop_hard
+            hard_cls = keep_hard
+            hard_count = int(hard_cls.sum())
+            flood_classes += 1
+        keep_soft = max(0, max_pixels - hard_count)
+        if current > max_pixels:
+            keep = _topk_mask(score, soft_cls, keep_soft)
+            drop = soft_cls & ~keep
+            candidate_set[:, cls] = candidate_set[:, cls] & ~drop
+            flood_classes += 1
+        ceiling_stats[f"foreground_ceiling_max_pixels_class{cls}"] = float(max_pixels)
+        ceiling_stats[f"foreground_ceiling_before_ratio_class{cls}"] = float(((hard_cls | soft_cls).float().mean()).detach())
+        ceiling_stats[f"foreground_ceiling_after_ratio_class{cls}"] = float(((hard_cls | (ambiguous_mask & candidate_set[:, cls])).float().mean()).detach())
+
+    fg_any = candidate_set[:, 1:].any(dim=1) if candidate_set.shape[1] > 1 else torch.zeros_like(singleton_mask)
+    orphan = old_fg_any & ~fg_any
+    background_from_ceiling = torch.zeros_like(singleton_mask, dtype=torch.bool)
+    if bool(config.get("use_background_from_foreground_ceiling", True)) and int(orphan.sum()) > 0:
+        bg_min_conf = float(config.get("background_candidate_min_confidence", config.get("min_teacher_confidence", 0.50)))
+        max_bg_ratio = float(config.get("max_background_from_ceiling_ratio", config.get("max_background_hard_ratio", 0.35)))
+        max_bg = int(round(total_pixels * max(0.0, max_bg_ratio)))
+        bg_eligible = orphan & (teacher_prob[:, 0] >= bg_min_conf)
+        background_from_ceiling = _topk_mask(teacher_prob[:, 0], bg_eligible, max_bg)
+        if int(background_from_ceiling.sum()) > 0:
+            candidate_set[:, 0] = candidate_set[:, 0] | background_from_ceiling
+            singleton_label = torch.where(background_from_ceiling, torch.zeros_like(singleton_label), singleton_label)
+            singleton_mask = (singleton_mask & ~background_from_ceiling) | background_from_ceiling
+            ambiguous_mask = ambiguous_mask & ~background_from_ceiling
+
+    ambiguous_mask = ambiguous_mask & (candidate_set.sum(dim=1) > 0) & ~singleton_mask
+    ceiling_stats["foreground_ceiling_flood_class_count"] = float(flood_classes)
+    ceiling_stats["candidate_foreground_after_ceiling_ratio"] = float(fg_any.float().mean().detach())
+    ceiling_stats["background_from_ceiling_ratio"] = float(background_from_ceiling.float().mean().detach())
+    ceiling_stats["empty_candidate_after_ceiling_ratio"] = float((candidate_set.sum(dim=1) == 0).float().mean().detach())
+    ceiling_stats.update(_foreground_participation_stats(singleton_label, singleton_mask, candidate_set, ambiguous_mask, fg_classes))
+    return candidate_set, singleton_label, singleton_mask, ambiguous_mask, ceiling_stats
+
+
 def _cap_safe_negative_set(
     raw_negative_set: torch.Tensor,
     candidate_set: torch.Tensor,
@@ -227,8 +325,20 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         teacher_prob=teacher_prob,
         config=config,
     )
+    candidate_set, singleton_label, singleton_mask, ambiguous_mask, ceiling_stats = _cap_foreground_candidate_set(
+        candidate_set=candidate_set,
+        singleton_label=singleton_label,
+        singleton_mask=singleton_mask,
+        ambiguous_mask=ambiguous_mask,
+        foreground_score=torch.maximum(foreground_score, teacher_prob * candidate_set.float()),
+        teacher_prob=teacher_prob,
+        verifier_score=verifier_score,
+        fg_classes=fg_classes,
+        config=config,
+    )
     has_fg_candidate = candidate_set[:, 1:].any(dim=1) if num_classes > 1 else torch.zeros_like(teacher_label, dtype=torch.bool)
     ambiguous_mask = ambiguous_mask & (candidate_set.sum(dim=1) > 0)
+    conflict_mask = (teacher_label == 0) & has_fg_candidate & ~reliable_background
 
     raw_negative_set = torch.zeros_like(candidate_set, dtype=torch.bool)
     rank_pos = _rank_positions(teacher_prob)
@@ -332,6 +442,7 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         "sam_verifier_score_mean": float(verifier_score.mean().detach()),
         "sam_verifier_gate_ratio": float((verifier_score >= min_verifier_score).float().mean().detach()),
         **budget_stats,
+        **ceiling_stats,
         **negative_budget_stats,
     }
     for cls in fg_classes:

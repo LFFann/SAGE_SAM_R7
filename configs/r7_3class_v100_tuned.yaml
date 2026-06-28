@@ -37,7 +37,7 @@ train:
   val_every: 250
   save_every: 500
   warmup_iterations: 1200
-  unsup_ramp_iterations: 3500
+  unsup_ramp_iterations: 5000
   gradient_accumulation: 2
 
 model:
@@ -98,24 +98,28 @@ sam:
     sam_relation_weight: 0.00
 
 r6:
-  foreground_grounding_start: 1000
+  foreground_grounding_start: 1200
   correlation_locality_start: 3500
   self_reliance_start: 6000
-  disable_background_unsup_until: 2200
+  disable_background_unsup_until: 1600
   min_fast_slow_agreement: 0.12
   low_agreement_unsup_scale: 0.20
+  stage1_unsup_max_scale: 0.25
+  stage1_sam_max_scale: 0.25
   self_reliance_ssl_scale: 0.35
 
 trust:
   enabled: true
   start_iter: 1000
   min_candidate_foreground_ratio: 0.04
+  max_candidate_foreground_ratio: 0.22
   min_class_foreground_ratio: 0.008
+  max_class_foreground_ratio: [0.0, 0.14, 0.10]
   max_safe_negative_pixel_ratio: 0.55
   max_class_safe_negative_ratio: 0.35
   max_background_hard_ratio: 0.35
-  unsafe_unsup_scale: 0.20
-  unsafe_sam_scale: 0.20
+  unsafe_unsup_scale: 0.05
+  unsafe_sam_scale: 0.10
   unsafe_negative_scale: 0.0
   disable_correlation_when_unsafe: true
   disable_locality_when_unsafe: true
@@ -151,6 +155,13 @@ pseudo:
   min_sam_verifier_score: 0.25
   background_max_verifier_score: 0.15
   bounded_safe_negative: true
+  bounded_foreground_candidates: true
+  max_foreground_candidate_ratio: 0.12
+  max_fg_candidate_ratio_per_class: [0.0, 0.12, 0.08]
+  foreground_ceiling_verifier_weight: 0.15
+  use_background_from_foreground_ceiling: true
+  background_candidate_min_confidence: 0.55
+  max_background_from_ceiling_ratio: 0.25
   max_safe_negative_ratio_per_class: 0.25
   safe_negative_to_positive_ratio: 2.0
   safe_negative_min_pixels_per_class: 0
@@ -166,14 +177,14 @@ pseudo:
   min_teacher_confidence: 0.50
   min_sam_confidence: 0.60
   min_foreground_score: 0.01
-  min_fg_pixels_per_class_ratio: 0.03
+  min_fg_pixels_per_class_ratio: 0.012
   max_background_hard_ratio: 0.35
   max_bg_to_fg_ratio: 2.0
   disable_bg_if_no_fg: true
   collapse_sentinel_enabled: true
-  collapse_min_fg_ratio_per_class: 0.03
+  collapse_min_fg_ratio_per_class: 0.012
   collapse_max_background_hard_ratio: 0.30
-  collapse_force_fg_ratio_per_class: 0.03
+  collapse_force_fg_ratio_per_class: 0.012
   collapse_disable_background_hard: true
   collapse_teacher_fallback_weight: 1.0
   collapse_min_candidate_score: 0.0
