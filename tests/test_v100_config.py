@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from r6.utils.io import load_yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_v100_tuned_config_matches_server_defaults():
+    cfg = load_yaml(ROOT / "configs/r6_3class_v100_tuned.yaml")
+
+    assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
+    assert cfg["data"]["dataset_name"] == "260513_data_labeled30pct"
+    assert cfg["data"]["image_size"] == 256
+    assert cfg["sam"]["checkpoint"] == "/root/autodl-tmp/sam_vit_b_01ec64.pth"
+    assert cfg["sam"]["use_sam"] is True
+    assert cfg["sam"]["image_size"] == 1024
+    assert cfg["train"]["device"] == "cuda"
+    assert cfg["sam"]["device"] == "cuda"
+    assert cfg["train"]["amp"] is True
+    assert cfg["train"]["batch_size_labeled"] == 4
+    assert cfg["train"]["batch_size_unlabeled"] == 4
+    assert cfg["train"]["gradient_accumulation"] == 2
+    assert cfg["train"]["num_workers"] == 8
+    assert cfg["train"]["max_iterations"] == 8000
+    assert cfg["train"]["warmup_iterations"] == 1200
+    assert cfg["r6"]["foreground_grounding_start"] == 800
+    assert cfg["r6"]["correlation_locality_start"] == 2000
+    assert cfg["r6"]["self_reliance_start"] == 5000
+    assert cfg["pseudo"]["collapse_sentinel_enabled"] is True
+    assert cfg["pseudo"]["collapse_disable_background_hard"] is True
+    assert cfg["pseudo"]["safe_negative_rank_low"] == 2
+    assert cfg["pseudo"]["safe_negative_sam_threshold"] == 0.30
+
+
+def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
+    cfg = load_yaml(ROOT / "configs/r7_3class_v100_tuned.yaml")
+
+    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned"
+    assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
+    assert cfg["sam"]["peft_type"] == "adapter"
+    assert cfg["sam"]["train_mask_decoder"] is False
+    assert cfg["sam"]["freeze_prompt_encoder"] is True
+    assert cfg["pseudo"]["sam_role"] == "verifier"
+    assert cfg["pseudo"]["bounded_safe_negative"] is True
+    assert cfg["pseudo"]["max_safe_negative_ratio_per_class"] <= 0.25
+    assert cfg["trust"]["enabled"] is True
+    assert cfg["trust"]["disable_correlation_when_unsafe"] is True
+
+
+def test_v100_launch_scripts_are_parameterized():
+    train_script = (ROOT / "scripts/train_r6_v100_tuned.sh").read_text(encoding="utf-8")
+    test_script = (ROOT / "scripts/test_r6_v100_tuned.sh").read_text(encoding="utf-8")
+
+    for token in ("CONFIG=", "OUTPUT_DIR=", "MAX_ITERATIONS=", "RESUME="):
+        assert token in train_script
+    assert "tools/validate_dataset.py" in train_script
+    assert "tools/verify_real_sam.py" in train_script
+    assert 'python train_r6.py "${train_args[@]}" "$@"' in train_script
+
+    for token in ("OUTPUT_DIR=", "CONFIG=", "CHECKPOINT="):
+        assert token in test_script
+    assert "best_val_dice.pth" in test_script
+    assert "latest.pth" in test_script
+    assert "export_deploy_checkpoint.py" in test_script
+
+
+def test_r7_launch_scripts_are_parameterized():
+    train_script = (ROOT / "scripts/train_r7_v100_tuned.sh").read_text(encoding="utf-8")
+    test_script = (ROOT / "scripts/test_r7_v100_tuned.sh").read_text(encoding="utf-8")
+
+    assert "configs/r7_3class_v100_tuned.yaml" in train_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned" in train_script
+    assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
+    assert "validate_r7.py" in test_script
+    assert "test_r7.py" in test_script

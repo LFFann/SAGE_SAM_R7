@@ -1,0 +1,217 @@
+experiment:
+  name: SAGE_SAM_R6_3Class
+  output_dir: outputs/SAGE_SAM_R6_3Class
+  seed: 2026
+  deterministic: false
+
+data:
+  root: ./KnowSAM/SampleData/260513_data_multiclass
+  dataset_name: 260513_data_multiclass
+  num_classes: 3
+  image_size: 256
+  in_channels: 3
+  labeled_subdir: labeled
+  unlabeled_subdir: unlabeled
+  val_subdir: val
+  test_subdir: test
+  image_dir_name: image
+  mask_dir_name: mask
+  calibration_ratio: 0.15
+  calibration_min_images: 4
+  calibration_split_seed: 2026
+  ignore_index: 255
+  synthetic: false
+
+train:
+  device: cuda
+  max_iterations: 10000
+  batch_size_labeled: 8
+  batch_size_unlabeled: 8
+  num_workers: 4
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: adamw
+  amp: true
+  grad_clip_norm: 5.0
+  log_every: 20
+  val_every: 250
+  save_every: 500
+  warmup_iterations: 1200
+  unsup_ramp_iterations: 1200
+  gradient_accumulation: 1
+
+model:
+  deploy_backbone: dual_fusion
+  branch_a: unet
+  branch_b: morph_unet2d
+  fusion: ham_lite
+  base_channels: 32
+  fusion_hidden_channels: 32
+  use_boundary_head: true
+  feature_dim: 256
+  complementary_dropout_p: 0.2
+
+teacher:
+  fast_ema_decay: 0.99
+  slow_ema_decay: 0.999
+  slow_refresh_every: 500
+  slow_refresh_min_delta: 0.0005
+  slow_min_dwell: 1000
+  use_bn_eval_for_teacher: true
+
+sam:
+  use_sam: true
+  model_type: vit_b
+  checkpoint: ./KnowSAM/sam_vit_b_01ec64.pth
+  device: cuda
+  image_size: 1024
+  train_peft: true
+  peft_type: lora_adapter
+  train_last_n_blocks: 4
+  max_trainable_ratio: 0.08
+  lora_rank: 4
+  lora_alpha: 8
+  adapter_dim: 32
+  train_mask_decoder: true
+  train_prompt_generator: true
+  freeze_image_encoder_base: true
+  freeze_prompt_encoder: true
+  self_reliance_start: 5000
+  self_reliance_decay: 0.999
+  self_reliance_min_weight: 0.05
+  keep_labeled_sam_sup: true
+  peft_warmup_iterations: 1200
+  lr_peft: 0.0001
+  lr_prompt: 0.001
+  lr_mask_decoder: 0.0001
+  utility_temperature: 0.02
+  utility_ema_decay: 0.9
+  disable_semantic_kd_after_no_gain: 3
+  prompt:
+    use_mask_prompt: true
+    use_box_prompt: true
+    use_point_prompt: true
+    use_negative_points: true
+    mask_prompt_size: 256
+    max_components_per_class: 3
+    min_component_area: 16
+    prompt_from: teacher_student_consensus
+    residual_scale: 0.15
+  losses:
+    sam_sup_weight: 0.5
+    sam_unsup_weight: 0.2
+    sam_student_kd_weight: 0.3
+    sam_boundary_weight: 0.05
+    sam_relation_weight: 0.05
+
+calibration:
+  alpha: 0.05
+  min_pixels_per_class: 128
+  start_iter: 800
+  update_every: 250
+  momentum: 0.8
+  classwise: true
+  use_soft_gate: true
+  use_calibration_split: true
+  min_participation_ratio: 0.20
+  max_quantile_clip: 0.97
+  temperature: 0.05
+  coverage_target: 0.35
+  update_only_after_warmup: true
+  use_sam_iou: true
+  use_prompt_stability: true
+  use_teacher_sam_agreement: true
+
+pseudo:
+  foreground_classes: [1, 2]
+  singleton_weight: 1.0
+  set_weight: 0.5
+  fuzzy_weight: 0.3
+  rank_weight: 0.1
+  negative_weight: 0.15
+  correlation_weight: 0.15
+  locality_weight: 0.05
+  relation_weight: 0.05
+  boundary_weight: 0.05
+  rank_margin: 0.5
+  safe_negative_threshold: 0.05
+  safe_negative_sam_threshold: 0.30
+  safe_negative_rank_low: 2
+  safe_negative_rank_high: 2
+  safe_negative_max_prob: 0.40
+  max_candidate_set_size: 2
+  empty_candidate_topk_foreground: 1
+  min_empty_foreground_score: 0.02
+  min_teacher_confidence: 0.5
+  min_sam_confidence: 0.5
+  min_foreground_score: 0.02
+  min_fg_pixels_per_class_ratio: 0.02
+  max_background_hard_ratio: 0.70
+  max_bg_to_fg_ratio: 4.0
+  disable_bg_if_no_fg: true
+  collapse_sentinel_enabled: true
+  collapse_min_fg_ratio_per_class: 0.02
+  collapse_max_background_hard_ratio: 0.50
+  collapse_force_fg_ratio_per_class: 0.02
+  collapse_disable_background_hard: true
+  collapse_teacher_fallback_weight: 1.0
+  collapse_min_candidate_score: 0.0
+  sam_foreground_low: 0.15
+  sam_boundary_uncertain_threshold: 0.10
+  sam_fuzzy_support_weight: 0.25
+  sam_region_min_weight: 0.05
+
+r6:
+  foreground_grounding_start: 800
+  correlation_locality_start: 2000
+  self_reliance_start: 5000
+  disable_background_unsup_until: 800
+  min_fast_slow_agreement: 0.10
+  low_agreement_unsup_scale: 0.25
+  self_reliance_ssl_scale: 0.50
+
+losses:
+  branch_sup_weight: 0.5
+  branch_ssl_weight: 0.5
+  conflict_review_weight: 0.2
+  fusion_sup_weight: 1.0
+
+structure:
+  use_online_relation: false
+  online_topk: 8
+  relation_resolution: 16
+  relation_temperature: 0.2
+  relation_rank_weight: 0.25
+  correlation_topk: 8
+  correlation_resolution: 16
+  correlation_temperature: 0.2
+  correlation_min_weight: 0.15
+  use_cache: false
+
+locality:
+  mask_ratio: 0.30
+  patch_size: 16
+  fill: mean
+
+augmentation:
+  weak:
+    random_flip: true
+    random_rotate_degree: 10
+    random_resized_crop: false
+  strong:
+    random_flip: true
+    random_rotate_degree: 15
+    gamma_range: [0.7, 1.5]
+    gain_range: [0.75, 1.25]
+    speckle_std_range: [0.0, 0.12]
+    gaussian_blur_prob: 0.3
+    cutmix_prob: 0.5
+    patch_mask_prob: 0.3
+    patch_mask_ratio: 0.25
+    adaptive_strength: true
+
+eval:
+  batch_size: 1
+  save_prediction: true
+  compute_hd95: true
+  exclude_background_for_avg: true
