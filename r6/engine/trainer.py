@@ -437,6 +437,7 @@ class SAGESAMR6Trainer:
                 "trust_gate_active": 0.0,
                 "trust_unsafe": 0.0,
                 "trust_unsup_scale": 1.0,
+                "trust_sam_scale": 1.0,
                 "trust_negative_scale": 1.0,
             }
         stats = targets.get("stats", {})
@@ -446,12 +447,15 @@ class SAGESAMR6Trainer:
                 "trust_gate_active": 0.0,
                 "trust_unsafe": 0.0,
                 "trust_unsup_scale": 1.0,
+                "trust_sam_scale": 1.0,
                 "trust_negative_scale": 1.0,
             }
 
         candidate_fg = float(stats.get("candidate_foreground_ratio", 0.0))
         safe_neg = float(stats.get("safe_negative_pixel_ratio", 0.0))
         background_hard = float(stats.get("background_hard_ratio", 0.0))
+        sam_support = float(stats.get("sam_foreground_support_ratio", 1.0))
+        sam_gate = float(stats.get("sam_train_gate_ratio", 0.0))
         per_class_fg = stats.get("per_class_foreground_participation_ratio", [])
         per_class_neg = stats.get("per_class_safe_negative_ratio", [])
         fg_classes = [int(c) for c in self.config.get("pseudo", {}).get("foreground_classes", list(range(1, self.num_classes)))]
@@ -461,10 +465,14 @@ class SAGESAMR6Trainer:
         max_safe_neg = float(cfg.get("max_safe_negative_pixel_ratio", 0.65))
         max_class_neg = float(cfg.get("max_class_safe_negative_ratio", 0.50))
         max_bg = float(cfg.get("max_background_hard_ratio", 0.45))
+        min_sam_support = float(cfg.get("min_sam_foreground_support_ratio", 0.0))
+        max_sam_gate_without_support = float(cfg.get("max_sam_gate_without_support", 1.0))
         low_candidate = candidate_fg < min_candidate_fg
         high_candidate = candidate_fg > max_candidate_fg
         high_negative = safe_neg > max_safe_neg
         high_background = background_hard > max_bg
+        low_sam_support = sam_support < min_sam_support
+        sam_overgate = low_sam_support and sam_gate > max_sam_gate_without_support
         low_class = False
         high_class = False
         high_class_negative = False
@@ -477,14 +485,26 @@ class SAGESAMR6Trainer:
             if 0 < cls < len(per_class_neg):
                 high_class_negative = high_class_negative or float(per_class_neg[cls]) > max_class_neg
 
-        unsafe = bool(low_candidate or high_candidate or low_class or high_class or high_negative or high_class_negative or high_background)
+        unsafe = bool(
+            low_candidate
+            or high_candidate
+            or low_class
+            or high_class
+            or high_negative
+            or high_class_negative
+            or high_background
+            or (sam_overgate and bool(cfg.get("sam_overgate_marks_unsafe", True)))
+        )
         trust_unsup_scale = float(cfg.get("unsafe_unsup_scale", 0.25)) if unsafe else 1.0
         trust_sam_scale = float(cfg.get("unsafe_sam_scale", trust_unsup_scale)) if unsafe else 1.0
+        if sam_overgate:
+            trust_sam_scale = min(trust_sam_scale, float(cfg.get("low_support_sam_scale", 0.0)))
         trust_negative_scale = float(cfg.get("unsafe_negative_scale", 0.0)) if unsafe else 1.0
         out_weights = dict(stage_weights)
+        if unsafe or sam_overgate:
+            out_weights["sam"] = float(out_weights.get("sam", 0.0)) * trust_sam_scale
         if unsafe:
             out_weights["unsup"] = float(out_weights.get("unsup", 0.0)) * trust_unsup_scale
-            out_weights["sam"] = float(out_weights.get("sam", 0.0)) * trust_sam_scale
             if bool(cfg.get("disable_correlation_when_unsafe", True)):
                 out_weights["correlation"] = 0.0
             if bool(cfg.get("disable_locality_when_unsafe", True)):
@@ -506,7 +526,10 @@ class SAGESAMR6Trainer:
             "trust_high_negative": 1.0 if high_negative else 0.0,
             "trust_high_class_negative": 1.0 if high_class_negative else 0.0,
             "trust_high_background": 1.0 if high_background else 0.0,
+            "trust_low_sam_support": 1.0 if low_sam_support else 0.0,
+            "trust_sam_overgate": 1.0 if sam_overgate else 0.0,
             "trust_unsup_scale": trust_unsup_scale,
+            "trust_sam_scale": trust_sam_scale,
             "trust_negative_scale": trust_negative_scale,
         }
 

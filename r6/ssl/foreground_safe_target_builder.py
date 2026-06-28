@@ -386,16 +386,20 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
     boundary_score = boundary.max(dim=1).values if boundary.ndim == 4 else boundary
     boundary_uncertain = boundary_score >= float(config.get("sam_boundary_uncertain_threshold", 0.10))
     semantic_gate = singleton_mask | ambiguous_mask | conflict_mask
+    structure_support_min = float(config.get("sam_structure_mask_min_support", fg_low))
+    sam_support_gate = fg_support >= structure_support_min
     sam_region_gate = (
         candidate_foreground_mask
         | fuzzy_region
         | conflict_mask
-        | (fg_support >= fg_low)
-        | (verifier_score >= min_verifier_score)
+        | sam_support_gate
         | boundary_uncertain
     ) & bool(sam_valid)
     sam_train_gate = sam_region_gate
-    structure_gate = (fg_support >= fg_low) | (verifier_score >= min_verifier_score) | foreground_seed_mask | fuzzy_region | conflict_mask | boundary_uncertain
+    structure_gate = sam_support_gate | foreground_seed_mask | fuzzy_region | conflict_mask | boundary_uncertain
+    sam_structure_support_mask = structure_gate & (
+        candidate_foreground_mask | sam_support_gate | fuzzy_region | conflict_mask | boundary_uncertain
+    )
     sam_weight = (foreground_score[:, 1:].max(dim=1).values if (sam_valid and num_classes > 1) else teacher_prob.new_zeros((bsz, height, width))).clamp(0.0, 1.0)
     sam_weight = torch.maximum(sam_weight, fg_support).clamp(0.0, 1.0)
     sam_weight = torch.maximum(sam_weight, verifier_score * candidate_foreground_mask.float()).clamp(0.0, 1.0)
@@ -429,6 +433,8 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         "boundary_uncertain_ratio": float(boundary_uncertain.float().mean().detach()),
         "sam_semantic_gate_ratio": float(semantic_gate.float().mean().detach()),
         "sam_structure_gate_ratio": float(structure_gate.float().mean().detach()),
+        "sam_support_gate_ratio": float(sam_support_gate.float().mean().detach()),
+        "sam_structure_support_mask_ratio": float(sam_structure_support_mask.float().mean().detach()),
         "sam_train_gate_ratio": float(sam_train_gate.float().mean().detach()),
         "sam_soft_weight_mean": float(sam_weight.mean().detach()),
         "sam_soft_weight_p25": float(torch.quantile(sam_weight.detach().float().reshape(-1).cpu(), 0.25)),
@@ -464,6 +470,7 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         "sam_train_gate": sam_train_gate.detach(),
         "sam_region_gate": sam_region_gate.detach(),
         "structure_gate": structure_gate.detach(),
+        "sam_structure_support_mask": sam_structure_support_mask.detach(),
         "sam_weight": sam_weight.detach(),
         "teacher_weight": teacher_conf.detach(),
         "semantic_weight": candidate_weight.detach(),

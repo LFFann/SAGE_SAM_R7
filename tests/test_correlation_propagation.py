@@ -71,13 +71,14 @@ def test_masked_locality_view_no_seed_is_noop():
     assert stats["masked_locality_ratio"] == 0.0
 
 
-def test_foreground_structure_mask_uses_candidate_fuzzy_and_structure_not_only_seed():
+def test_foreground_structure_mask_uses_candidate_fuzzy_and_sam_supported_structure():
     candidate = torch.zeros(1, 3, 3, 3, dtype=torch.bool)
     candidate[:, 1, 0, 0] = True
     fuzzy = torch.zeros(1, 3, 3, dtype=torch.bool)
     fuzzy[:, 1, 1] = True
-    structure = torch.zeros(1, 3, 3, dtype=torch.bool)
-    structure[:, 2, 2] = True
+    sam_structure = torch.zeros(1, 3, 3, dtype=torch.bool)
+    sam_structure[:, 2, 2] = True
+    raw_structure = torch.ones(1, 3, 3, dtype=torch.bool)
     hard_seed = torch.zeros(1, 3, 3, dtype=torch.bool)
 
     mask = build_foreground_structure_mask(
@@ -85,7 +86,8 @@ def test_foreground_structure_mask_uses_candidate_fuzzy_and_structure_not_only_s
             "candidate_set": candidate,
             "foreground_seed_mask": hard_seed,
             "fuzzy_region": fuzzy,
-            "structure_gate": structure,
+            "sam_structure_support_mask": sam_structure,
+            "structure_gate": raw_structure,
         }
     )
 
@@ -95,12 +97,13 @@ def test_foreground_structure_mask_uses_candidate_fuzzy_and_structure_not_only_s
     assert int(mask.sum()) == 3
 
 
-def test_sam_kd_gate_can_use_structure_without_hard_seed():
+def test_sam_kd_gate_can_use_sam_supported_structure_without_hard_seed():
     targets = {
         "candidate_set": torch.zeros(1, 3, 2, 2, dtype=torch.bool),
         "foreground_seed_mask": torch.zeros(1, 2, 2, dtype=torch.bool),
         "fuzzy_region": torch.zeros(1, 2, 2, dtype=torch.bool),
         "structure_gate": torch.ones(1, 2, 2, dtype=torch.bool),
+        "sam_structure_support_mask": torch.tensor([[[True, False], [False, False]]]),
         "structure_weight": torch.ones(1, 2, 2),
     }
     foreground_mask = build_foreground_structure_mask(targets)
@@ -116,7 +119,7 @@ def test_sam_kd_gate_can_use_structure_without_hard_seed():
 
     loss = foreground_safe_sam_kd_loss(logits, sam_prob, foreground_mask=foreground_mask, gate=gate)
 
-    assert gate.sum() > 0
+    assert int(gate.sum()) == 1
     assert loss > 0
 
 

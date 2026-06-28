@@ -19,8 +19,10 @@ def build_foreground_structure_mask(targets: dict) -> torch.Tensor | None:
     """Shared broad foreground route for SAM KD, locality, and propagation.
 
     Hard foreground seeds are intentionally only one possible source.  Candidate
-    foreground, fuzzy set-valued pixels, and SAM structure gates must also keep
-    the structural training path alive.
+    foreground, fuzzy set-valued pixels, and SAM-supported structure also keep
+    the structural training path alive.  The raw structure gate is used only as
+    a compatibility fallback so a high verifier score cannot open a global SAM
+    KD/locality route by itself.
     """
 
     seed = None
@@ -28,11 +30,14 @@ def build_foreground_structure_mask(targets: dict) -> torch.Tensor | None:
     if candidate_set is not None and candidate_set.ndim == 4 and candidate_set.shape[1] > 1:
         seed = candidate_set[:, 1:].any(dim=1).bool()
 
-    for key in ("foreground_seed_mask", "fuzzy_region", "structure_gate"):
+    for key in ("foreground_seed_mask", "fuzzy_region", "sam_structure_support_mask"):
         value = _as_spatial_bool(targets.get(key))
         if value is None:
             continue
         seed = value if seed is None else (seed | value.to(device=seed.device))
+
+    if seed is None:
+        seed = _as_spatial_bool(targets.get("structure_gate"))
 
     return seed
 
