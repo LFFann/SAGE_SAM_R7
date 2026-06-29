@@ -26,6 +26,11 @@ changes the semi-supervised loop:
    can produce multiple connected-component prompts, so bilateral class-1
    structures are decoded with separate SAM boxes/masks and merged back into
    the original class before supervision.
+7. R7.4 adds prior-calibrated trust and late-stage LR stabilization. The
+   dynamic trust gate now calibrates its minimum foreground thresholds from the
+   labeled foreground prior, and SAM KD receives a small gated effective-weight
+   floor so valid SAM prompts can actually influence the student without
+   becoming hard pseudo-labels.
 
 V100 training:
 
@@ -36,7 +41,7 @@ bash scripts/train_r7_v100_tuned.sh
 Resume or shorten:
 
 ```bash
-MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_MultiPrompt/checkpoints/latest.pth \
+MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_MultiPrompt_TrustLR/checkpoints/latest.pth \
   bash scripts/train_r7_v100_tuned.sh
 ```
 
@@ -57,10 +62,15 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `trust_unsafe`
 - `trust_high_candidate`
 - `trust_high_class`
+- `trust_min_candidate_foreground_ratio`
 - `sam_verifier_score_mean`
 - `sam_prompt_valid_mean`
 - `sam_prompt_box_area_ratio_mean`
 - `sam_prompt_component_count_class1`
+- `sam_kd_raw_effective_weight`
+- `sam_kd_effective_weight`
+- `sam_kd_floor_active`
+- `lr_scale`
 - `loss_sam_kd`
 
 The default R7 config uses adapter-only SAM PEFT, freezes the prompt encoder,

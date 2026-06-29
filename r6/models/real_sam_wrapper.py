@@ -260,7 +260,7 @@ class RealSAMWrapper(nn.Module):
             weights = prompt_weight.to(device=fg_prob_flat.device, dtype=dtype).flatten().clamp(0.0, 1.0)
             if weights.numel() != fg_prob_flat.shape[0]:
                 weights = torch.ones(fg_prob_flat.shape[0], device=fg_prob_flat.device, dtype=dtype)
-        iou_flat = torch.sigmoid(iou_predictions[:, 0]).to(dtype=dtype)
+        iou_flat = iou_predictions[:, 0].to(dtype=dtype).clamp(0.0, 1.0)
         rows = []
         iou_rows = []
         for bi in range(batch_size):

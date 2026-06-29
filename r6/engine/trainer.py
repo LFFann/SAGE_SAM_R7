@@ -186,6 +186,7 @@ class SAGESAMR6Trainer:
             disable_after_no_gain=sam_cfg.get("disable_semantic_kd_after_no_gain", 3),
         )
         self.optimizer = self._build_optimizer()
+        self.base_lrs = [float(group.get("lr", train_cfg.get("lr", 1e-3))) for group in self.optimizer.param_groups]
         self.trainable_parameters = [p for group in self.optimizer.param_groups for p in group["params"] if p.requires_grad]
         self.amp = bool(train_cfg.get("amp", False)) and self.device.type == "cuda"
         self.scaler = make_grad_scaler(self.device.type, self.amp)
@@ -212,6 +213,33 @@ class SAGESAMR6Trainer:
             if sam_cfg.get("train_peft", True) and not any(str(g.get("name", "")).startswith("sam_") for g in groups):
                 raise RuntimeError("sam.train_peft=true but optimizer has no SAM parameter group")
         return torch.optim.AdamW(groups, lr=base_lr, weight_decay=train_cfg.get("weight_decay", 1e-4))
+
+    def _update_learning_rate(self, iteration: int) -> float:
+        train_cfg = self.config.get("train", {})
+        schedule = str(train_cfg.get("lr_schedule", "constant")).lower()
+        if schedule in ("constant", "none", ""):
+            return 1.0
+        max_iter = max(1, int(train_cfg.get("max_iterations", iteration)))
+        decay_start = max(0, int(train_cfg.get("lr_decay_start_iteration", 0)))
+        min_ratio = float(train_cfg.get("min_lr_ratio", 0.0))
+        if "min_lr" in train_cfg and self.base_lrs:
+            min_ratio = max(min_ratio, float(train_cfg["min_lr"]) / max(self.base_lrs[0], 1e-12))
+        min_ratio = min(max(min_ratio, 0.0), 1.0)
+        if iteration <= decay_start:
+            scale = 1.0
+        else:
+            denom = max(1, max_iter - decay_start)
+            progress = min(1.0, max(0.0, (iteration - decay_start) / denom))
+            if schedule == "cosine":
+                scale = min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
+            elif schedule == "poly":
+                power = float(train_cfg.get("lr_poly_power", 0.9))
+                scale = min_ratio + (1.0 - min_ratio) * ((1.0 - progress) ** power)
+            else:
+                raise ValueError(f"Unsupported lr_schedule={schedule!r}")
+        for base_lr, group in zip(self.base_lrs, self.optimizer.param_groups):
+            group["lr"] = float(base_lr) * float(scale)
+        return float(scale)
 
     def _log_trainability(self):
         group_names = [str(g.get("name", f"group{idx}")) for idx, g in enumerate(self.optimizer.param_groups)]
@@ -311,6 +339,37 @@ class SAGESAMR6Trainer:
             new_caps.append(min(float(old), prior_cap))
         pseudo_cfg["labeled_class_prior"] = priors
         pseudo_cfg["max_fg_candidate_ratio_per_class"] = new_caps
+        trust_cfg = self.config.setdefault("trust", {})
+        trust_prior_event = {}
+        if bool(trust_cfg.get("prior_calibrated_min_foreground", False)):
+            old_min_candidate = float(trust_cfg.get("min_candidate_foreground_ratio", 0.0))
+            fg_prior = float(sum(priors[1:]))
+            candidate_multiplier = float(trust_cfg.get("min_candidate_prior_multiplier", 0.85))
+            candidate_floor = float(trust_cfg.get("min_candidate_foreground_floor", 0.0))
+            candidate_ceiling = float(trust_cfg.get("min_candidate_foreground_ceiling", old_min_candidate or 1.0))
+            calibrated_candidate = min(candidate_ceiling, max(candidate_floor, fg_prior * candidate_multiplier))
+            trust_cfg["min_candidate_foreground_ratio"] = calibrated_candidate
+
+            old_class_min = trust_cfg.get("min_class_foreground_ratio", [0.0 for _ in range(self.num_classes)])
+            class_multiplier = float(trust_cfg.get("min_class_prior_multiplier", 0.55))
+            class_floor = float(trust_cfg.get("min_class_foreground_floor", 0.0))
+            new_class_min = []
+            for cls in range(self.num_classes):
+                old_value = self._class_trust_value({"min_class_foreground_ratio": old_class_min}, "min_class_foreground_ratio", cls, 0.0)
+                if cls == 0:
+                    new_class_min.append(float(old_value))
+                    continue
+                calibrated_class = max(class_floor, float(priors[cls]) * class_multiplier)
+                new_class_min.append(min(float(old_value), calibrated_class) if old_value > 0.0 else calibrated_class)
+            trust_cfg["min_class_foreground_ratio"] = new_class_min
+            trust_prior_event = {
+                "trust_prior_calibrated": True,
+                "old_min_candidate_foreground_ratio": old_min_candidate,
+                "new_min_candidate_foreground_ratio": calibrated_candidate,
+                "old_min_class_foreground_ratio": old_class_min,
+                "new_min_class_foreground_ratio": new_class_min,
+                "foreground_prior_sum": fg_prior,
+            }
         append_jsonl(
             self.output_dir / "diagnostics.jsonl",
             {
@@ -319,6 +378,7 @@ class SAGESAMR6Trainer:
                 "class_prior": priors,
                 "max_fg_candidate_ratio_per_class": new_caps,
                 "foreground_prior_cap_multiplier": multiplier,
+                **trust_prior_event,
             },
         )
         if hasattr(self, "logger"):
@@ -566,7 +626,7 @@ class SAGESAMR6Trainer:
             trust_sam_scale = min(trust_sam_scale, float(cfg.get("low_support_sam_scale", 0.0)))
         trust_negative_scale = float(cfg.get("unsafe_negative_scale", 0.0)) if unsafe else 1.0
         out_weights = dict(stage_weights)
-        if unsafe or sam_overgate:
+        if unsafe or sam_overgate or low_sam_support:
             out_weights["sam"] = float(out_weights.get("sam", 0.0)) * trust_sam_scale
         if unsafe:
             out_weights["unsup"] = float(out_weights.get("unsup", 0.0)) * trust_unsup_scale
@@ -595,6 +655,10 @@ class SAGESAMR6Trainer:
             "trust_sam_gate_too_wide": 1.0 if sam_gate_too_wide else 0.0,
             "trust_sam_overgate": 1.0 if sam_overgate else 0.0,
             "trust_pre_ceiling_flood": 1.0 if pre_ceiling_flood else 0.0,
+            "trust_min_candidate_foreground_ratio": min_candidate_fg,
+            "trust_min_sam_foreground_support_ratio": min_sam_support,
+            "trust_max_sam_gate_without_support": max_sam_gate_without_support,
+            "trust_max_sam_gate_to_support_ratio": max_sam_gate_to_support,
             "trust_unsup_scale": trust_unsup_scale,
             "trust_sam_scale": trust_sam_scale,
             "trust_negative_scale": trust_negative_scale,
@@ -718,6 +782,7 @@ class SAGESAMR6Trainer:
         return metrics
 
     def train_one_iter(self, batch_l, batch_u, iteration: int, update: bool = True, step_optimizer: bool = True):
+        lr_scale = self._update_learning_rate(iteration)
         self.student.train()
         if self.mentor is not None:
             self.mentor.train()
@@ -876,23 +941,43 @@ class SAGESAMR6Trainer:
             unsup_scale = ramp * float(stage_weights["unsup"])
             sam_ssl_scale = sam_scale * float(stage_weights["sam"])
             sam_kd_loss_weight = float(sam_loss_cfg.get("sam_student_kd_weight", self.sam_utility.semantic_weight(iteration)))
+            sam_kd_raw_effective_weight = float(unsup_scale * sam_ssl_scale * sam_kd_loss_weight)
+            sam_kd_effective_weight = sam_kd_raw_effective_weight
+            sam_kd_floor_active = False
+            sam_kd_floor = float(sam_loss_cfg.get("sam_kd_min_effective_weight", 0.0))
+            sam_kd_floor_after = int(
+                sam_loss_cfg.get(
+                    "sam_kd_min_effective_after",
+                    self.config.get("r6", {}).get("foreground_grounding_start", 0),
+                )
+            )
+            sam_kd_floor_gate_ratio = float(sam_loss_cfg.get("sam_kd_min_effective_gate_ratio", 0.0))
+            if (
+                sam_kd_floor > 0.0
+                and iteration >= sam_kd_floor_after
+                and sam_u.get("valid")
+                and sam_kd_gate_ratio >= sam_kd_floor_gate_ratio
+            ):
+                sam_kd_effective_weight = max(sam_kd_effective_weight, sam_kd_floor)
+                sam_kd_floor_active = sam_kd_effective_weight > sam_kd_raw_effective_weight
+            sam_aux_effective_scale = float(unsup_scale * sam_ssl_scale)
+            non_sam_unsup_loss = (
+                loss_unsup
+                + float(loss_cfg.get("conflict_review_weight", 0.2)) * loss_conflict
+                + float(stage_weights["correlation"]) * pseudo_cfg.get("correlation_weight", 0.0) * loss_corr
+                + float(stage_weights["locality"]) * pseudo_cfg.get("locality_weight", 0.0) * loss_local
+            )
+            sam_aux_loss = (
+                float(sam_loss_cfg.get("sam_unsup_weight", 0.2)) * loss_sam_unsup
+                + float(sam_loss_cfg.get("sam_relation_weight", pseudo_cfg.get("relation_weight", 0.05))) * loss_relation
+                + float(sam_loss_cfg.get("sam_boundary_weight", pseudo_cfg.get("boundary_weight", 0.05))) * loss_boundary
+            )
             loss = (
                 loss_sup
                 + sam_sup_scale * sam_loss_cfg.get("sam_sup_weight", self.config.get("sam", {}).get("sam_sup_weight", 0.5)) * loss_sam_sup
-                + unsup_scale
-                * (
-                    loss_unsup
-                    + float(loss_cfg.get("conflict_review_weight", 0.2)) * loss_conflict
-                    + float(stage_weights["correlation"]) * pseudo_cfg.get("correlation_weight", 0.0) * loss_corr
-                    + float(stage_weights["locality"]) * pseudo_cfg.get("locality_weight", 0.0) * loss_local
-                    + sam_ssl_scale
-                    * (
-                        sam_loss_cfg.get("sam_unsup_weight", 0.2) * loss_sam_unsup
-                        + sam_kd_loss_weight * loss_kd
-                        + sam_loss_cfg.get("sam_relation_weight", pseudo_cfg.get("relation_weight", 0.05)) * loss_relation
-                        + sam_loss_cfg.get("sam_boundary_weight", pseudo_cfg.get("boundary_weight", 0.05)) * loss_boundary
-                    )
-                )
+                + unsup_scale * non_sam_unsup_loss
+                + sam_aux_effective_scale * sam_aux_loss
+                + sam_kd_effective_weight * loss_kd
             )
 
         sam_grad_norm = 0.0
@@ -948,7 +1033,9 @@ class SAGESAMR6Trainer:
             "sam_semantic_weight": self.sam_utility.semantic_weight(iteration),
             "sam_ssl_scale": float(sam_ssl_scale),
             "sam_kd_loss_weight": float(sam_kd_loss_weight),
-            "sam_kd_effective_weight": float(unsup_scale * sam_ssl_scale * sam_kd_loss_weight),
+            "sam_kd_raw_effective_weight": float(sam_kd_raw_effective_weight),
+            "sam_kd_effective_weight": float(sam_kd_effective_weight),
+            "sam_kd_floor_active": 1.0 if sam_kd_floor_active else 0.0,
             "sam_utility_ema": float(self.sam_utility.utility_ema),
             "sam_utility_disabled": 1.0 if self.sam_utility.disabled else 0.0,
             "fast_slow_agreement": float(teacher_out["agreement"].detach()),
@@ -960,6 +1047,7 @@ class SAGESAMR6Trainer:
             "optimizer_step": 1.0 if (update and step_optimizer) else 0.0,
             "gradient_accumulation": float(self.grad_accum_steps),
             "lr": self.optimizer.param_groups[0]["lr"],
+            "lr_scale": lr_scale,
             "gpu_mem_mb": float(torch.cuda.max_memory_allocated() / 1024 / 1024) if self.device.type == "cuda" else 0.0,
             **prompt_stats,
             **trust_logs,
