@@ -129,7 +129,7 @@ def _cap_foreground_candidate_set(
         return candidate_set, singleton_label, singleton_mask, ambiguous_mask, {"foreground_ceiling_active": 0.0}
 
     total_pixels = int(singleton_mask.numel())
-    min_ratio = float(config.get("min_fg_pixels_per_class_ratio", config.get("min_fg_ratio_per_class", 0.0)))
+    min_ratio_default = float(config.get("min_fg_ratio_per_class", 0.0))
     min_pixels_cfg = int(config.get("min_fg_pixels_per_class", 0))
     old_fg_any = candidate_set[:, 1:].any(dim=1) if candidate_set.shape[1] > 1 else torch.zeros_like(singleton_mask)
     ceiling_stats: dict[str, float] = {"foreground_ceiling_active": 1.0}
@@ -142,6 +142,7 @@ def _cap_foreground_candidate_set(
         hard_cls = singleton_mask & (singleton_label == cls)
         soft_cls = ambiguous_mask & candidate_set[:, cls]
         current = int((hard_cls | soft_cls).sum())
+        min_ratio = _class_value(config, "min_fg_pixels_per_class_ratio", cls, min_ratio_default)
         min_pixels = max(min_pixels_cfg, int(round(total_pixels * min_ratio)))
         max_ratio = _class_value(config, "max_fg_candidate_ratio_per_class", cls, float(config.get("max_foreground_candidate_ratio", 1.0)))
         max_pixels = max(min_pixels, int(round(total_pixels * max_ratio)))

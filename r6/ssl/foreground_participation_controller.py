@@ -17,6 +17,17 @@ def _topk_mask(score: torch.Tensor, eligible: torch.Tensor, k: int) -> torch.Ten
     return out
 
 
+def _class_value(config: dict, key: str, cls: int, default: float) -> float:
+    value = config.get(key, default)
+    if isinstance(value, dict):
+        return float(value.get(cls, value.get(str(cls), default)))
+    if isinstance(value, (list, tuple)):
+        if cls < len(value):
+            return float(value[cls])
+        return float(value[-1]) if value else float(default)
+    return float(value)
+
+
 def _foreground_participation(
     *,
     singleton_label: torch.Tensor,
@@ -53,16 +64,17 @@ def apply_foreground_budget(
     num_classes = candidate_set.shape[1]
     total_pixels = int(singleton_mask.numel())
     fg_classes = list(config.get("foreground_classes", list(range(1, num_classes))))
-    min_ratio = float(config.get("min_fg_pixels_per_class_ratio", config.get("min_fg_ratio_per_class", 0.02)))
+    min_ratio_default = float(config.get("min_fg_ratio_per_class", 0.02))
     min_pixels_cfg = int(config.get("min_fg_pixels_per_class", 0))
-    min_pixels = max(min_pixels_cfg, int(round(total_pixels * min_ratio)))
-    min_pixels = max(0, min(min_pixels, total_pixels))
     promoted_any = torch.zeros_like(singleton_mask, dtype=torch.bool)
     fg_budget_violation = 0
 
     for cls in fg_classes:
         if not (0 < cls < num_classes):
             continue
+        min_ratio = _class_value(config, "min_fg_pixels_per_class_ratio", cls, min_ratio_default)
+        min_pixels = max(min_pixels_cfg, int(round(total_pixels * min_ratio)))
+        min_pixels = max(0, min(min_pixels, total_pixels))
         hard_cls = singleton_mask & (singleton_label == cls)
         soft_cls = ambiguous_mask & candidate_set[:, cls]
         current = int((hard_cls | soft_cls).sum())
@@ -89,7 +101,7 @@ def apply_foreground_budget(
     )
 
     sentinel_enabled = bool(config.get("collapse_sentinel_enabled", True))
-    sentinel_ratio = float(config.get("collapse_min_fg_ratio_per_class", min_ratio))
+    sentinel_ratio = float(config.get("collapse_min_fg_ratio_per_class", min_ratio_default))
     sentinel_pixels = max(int(config.get("collapse_min_fg_pixels_per_class", 0)), int(round(total_pixels * sentinel_ratio)))
     sentinel_pixels = max(0, min(sentinel_pixels, total_pixels))
     bg_hard = singleton_mask & (singleton_label == 0)
@@ -104,7 +116,7 @@ def apply_foreground_budget(
     collapse_fg_budget_violation = 0
 
     if collapse_active and sentinel_pixels > 0:
-        force_ratio = float(config.get("collapse_force_fg_ratio_per_class", max(min_ratio, sentinel_ratio)))
+        force_ratio = float(config.get("collapse_force_fg_ratio_per_class", max(min_ratio_default, sentinel_ratio)))
         force_pixels_cfg = int(config.get("collapse_force_fg_pixels_per_class", 0))
         force_pixels = max(force_pixels_cfg, int(round(total_pixels * force_ratio)), sentinel_pixels)
         force_pixels = max(0, min(force_pixels, total_pixels))
@@ -183,6 +195,9 @@ def apply_foreground_budget(
                     max_ratio = float(max_ratio_value[cls] if cls < len(max_ratio_value) else max_ratio_value[-1])
                 else:
                     max_ratio = float(max_ratio_value)
+                min_ratio = _class_value(config, "min_fg_pixels_per_class_ratio", cls, min_ratio_default)
+                min_pixels = max(min_pixels_cfg, int(round(total_pixels * min_ratio)))
+                min_pixels = max(0, min(min_pixels, total_pixels))
                 max_pixels = max(min_pixels, int(round(total_pixels * max_ratio * scale)))
                 max_pixels = max(0, min(max_pixels, total_pixels))
                 keep = max(0, max_pixels - current)

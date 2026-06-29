@@ -38,7 +38,7 @@ def test_v100_tuned_config_matches_server_defaults():
 def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     cfg = load_yaml(ROOT / "configs/r7_3class_v100_tuned.yaml")
 
-    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_PriorAlign"
+    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_DiagPrior"
     assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
     assert cfg["train"]["deploy_best_checkpoint"] is True
     assert cfg["train"]["stop_on_val_collapse"] is True
@@ -57,7 +57,8 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["pseudo"]["max_foreground_candidate_ratio"] <= 0.05
     assert cfg["pseudo"]["max_safe_negative_ratio_per_class"] <= 0.25
     assert cfg["pseudo"]["max_fg_candidate_ratio_per_class"][1] <= 0.06
-    assert cfg["pseudo"]["min_fg_pixels_per_class_ratio"] <= 0.006
+    assert cfg["pseudo"]["min_fg_pixels_per_class_ratio"][1] <= 0.006
+    assert cfg["pseudo"]["min_fg_pixels_per_class_ratio"][2] >= 0.008
     assert cfg["pseudo"]["max_background_from_ceiling_ratio"] <= 0.10
     assert cfg["pseudo"]["background_candidate_min_confidence"] >= 0.65
     assert cfg["pseudo"]["sam_structure_mask_min_support"] >= 0.08
@@ -65,7 +66,8 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["sam"]["losses"]["sam_unsup_weight"] == 0.0
     assert cfg["trust"]["max_candidate_foreground_ratio"] <= 0.25
     assert cfg["trust"]["min_candidate_foreground_ratio"] <= 0.025
-    assert cfg["trust"]["min_class_foreground_ratio"] <= 0.004
+    assert cfg["trust"]["min_class_foreground_ratio"][1] <= 0.004
+    assert cfg["trust"]["min_class_foreground_ratio"][2] <= 0.004
     assert cfg["trust"]["max_class_foreground_ratio"][1] <= 0.14
     assert cfg["trust"]["min_sam_foreground_support_ratio"] >= 0.02
     assert cfg["trust"]["max_sam_gate_without_support"] <= 0.50
@@ -75,6 +77,8 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["trust"]["disable_correlation_when_unsafe"] is True
     assert 1200 <= cfg["r6"]["foreground_grounding_start"] <= 1600
     assert cfg["r6"]["stage1_unsup_max_scale"] <= 0.15
+    assert cfg["eval"]["baseline"]["avg_dice"] > 0.760
+    assert cfg["diagnostics"]["train_visualize_every"] == 250
 
 
 def test_v100_launch_scripts_are_parameterized():
@@ -99,7 +103,7 @@ def test_r7_launch_scripts_are_parameterized():
     test_script = (ROOT / "scripts/test_r7_v100_tuned.sh").read_text(encoding="utf-8")
 
     assert "configs/r7_3class_v100_tuned.yaml" in train_script
-    assert "SAGE_SAM_R7_3Class_V100_Tuned" in train_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned_DiagPrior" in train_script
     assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
     assert "validate_r7.py" in test_script
     assert "test_r7.py" in test_script

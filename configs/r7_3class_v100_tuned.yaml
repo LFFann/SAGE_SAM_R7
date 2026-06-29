@@ -1,6 +1,6 @@
 experiment:
-  name: SAGE_SAM_R7_3Class_V100_Tuned_PriorAlign
-  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorAlign
+  name: SAGE_SAM_R7_3Class_V100_Tuned_DiagPrior
+  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_DiagPrior
   seed: 2026
   deterministic: false
 
@@ -118,7 +118,7 @@ trust:
   start_iter: 1000
   min_candidate_foreground_ratio: 0.025
   max_candidate_foreground_ratio: 0.22
-  min_class_foreground_ratio: 0.004
+  min_class_foreground_ratio: [0.0, 0.004, 0.004]
   max_class_foreground_ratio: [0.0, 0.14, 0.10]
   max_safe_negative_pixel_ratio: 0.55
   max_class_safe_negative_ratio: 0.35
@@ -202,7 +202,7 @@ pseudo:
   min_teacher_confidence: 0.50
   min_sam_confidence: 0.60
   min_foreground_score: 0.01
-  min_fg_pixels_per_class_ratio: 0.006
+  min_fg_pixels_per_class_ratio: [0.0, 0.006, 0.008]
   max_background_hard_ratio: 0.35
   max_bg_to_fg_ratio: 2.0
   disable_bg_if_no_fg: true
@@ -257,3 +257,11 @@ eval:
   save_prediction: true
   compute_hd95: true
   exclude_background_for_avg: true
+  baseline:
+    avg_dice: 0.7601364254951477
+    class_dice: [null, 0.7218010774222662, 0.7984717713624256]
+
+diagnostics:
+  train_visualize_every: 250
+  train_visualize_first: true
+  train_visualize_max_samples: 1

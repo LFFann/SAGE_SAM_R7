@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from tools.check_r6_diagnostics import evaluate_diagnostics, load_metric_rows
+from tools.analyze_r7_run import analyze
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,3 +76,30 @@ def test_diagnostics_cli_reads_output_dir(tmp_path):
     )
 
     assert '"status": "pass"' in result.stdout
+
+
+def test_analyze_r7_run_reports_best_and_drop(tmp_path):
+    output = tmp_path / "run"
+    output.mkdir()
+    rows = [
+        {"iteration": 1, "phase": "train", "r6_unsup_scale": 0.0, "trust_unsafe": 0.0},
+        {"iteration": 250, "phase": "val", "avg_dice": 0.70, "class_dice": [0.99, 0.60, 0.80]},
+        {
+            "iteration": 500,
+            "phase": "val",
+            "avg_dice": 0.60,
+            "class_dice": [0.99, 0.40, 0.80],
+            "foreground_pred_ratio": 0.02,
+            "foreground_gt_ratio": 0.03,
+            "class_pred_to_gt_ratio": [1.0, 0.5, 1.0],
+        },
+    ]
+    with (output / "metrics.jsonl").open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    report = analyze(output, baseline_avg_dice=0.65)
+
+    assert report["best_iteration"] == 250
+    assert report["best_baseline_gap_avg_dice"] > 0
+    assert report["worst_dropped_class"] == 1

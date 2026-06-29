@@ -53,6 +53,7 @@ from r6.ssl.foreground_correlation_locality import (
 )
 from r6.ssl.online_sam_relation import online_sam_student_relation_loss
 from r6.ssl.foreground_safe_target_builder import build_foreground_safe_targets
+from r6.utils.visualization import save_diagnostic_grid
 
 
 class _NoOpGradScaler:
@@ -195,6 +196,9 @@ class SAGESAMR6Trainer:
         self.calibration_update_count = 0
         self.val_collapse_count = 0
         self.stop_requested = False
+        diag_cfg = config.get("diagnostics", {})
+        self.train_visualize_every = int(diag_cfg.get("train_visualize_every", 0))
+        self.train_visualize_max_samples = max(1, int(diag_cfg.get("train_visualize_max_samples", 1)))
         self._log_trainability()
         self._build_data()
 
@@ -511,7 +515,7 @@ class SAGESAMR6Trainer:
         per_class_neg = stats.get("per_class_safe_negative_ratio", [])
         fg_classes = [int(c) for c in self.config.get("pseudo", {}).get("foreground_classes", list(range(1, self.num_classes)))]
         min_candidate_fg = float(cfg.get("min_candidate_foreground_ratio", 0.03))
-        min_class_fg = float(cfg.get("min_class_foreground_ratio", 0.005))
+        min_class_fg_default = 0.005
         max_candidate_fg = float(cfg.get("max_candidate_foreground_ratio", 1.0))
         max_safe_neg = float(cfg.get("max_safe_negative_pixel_ratio", 0.65))
         max_class_neg = float(cfg.get("max_class_safe_negative_ratio", 0.50))
@@ -535,6 +539,7 @@ class SAGESAMR6Trainer:
         for cls in fg_classes:
             if 0 < cls < len(per_class_fg):
                 cls_fg = float(per_class_fg[cls])
+                min_class_fg = self._class_trust_value(cfg, "min_class_foreground_ratio", cls, min_class_fg_default)
                 low_class = low_class or cls_fg < min_class_fg
                 cls_max = self._class_trust_value(cfg, "max_class_foreground_ratio", cls, 1.0)
                 high_class = high_class or cls_fg > cls_max
@@ -605,6 +610,86 @@ class SAGESAMR6Trainer:
                 return float(value[cls])
             return float(value[-1]) if value else float(default)
         return float(value)
+
+    def _map_from_class_channels(self, tensor: torch.Tensor) -> torch.Tensor:
+        if tensor.ndim != 4:
+            return tensor
+        out = tensor.new_zeros(tensor.shape[0], tensor.shape[2], tensor.shape[3], dtype=torch.long)
+        for cls in range(1, min(self.num_classes, tensor.shape[1])):
+            out = torch.where(tensor[:, cls].bool(), torch.full_like(out, cls), out)
+        return out
+
+    def _maybe_save_training_visualization(
+        self,
+        iteration: int,
+        image: torch.Tensor,
+        teacher_prob: torch.Tensor,
+        student_prob: torch.Tensor | None,
+        sam_u: dict,
+        targets: dict,
+    ) -> str | None:
+        if self.train_visualize_every <= 0:
+            return None
+        save_first = bool(self.config.get("diagnostics", {}).get("train_visualize_first", True))
+        should_save = iteration % self.train_visualize_every == 0 or (save_first and iteration == 1)
+        if not should_save:
+            return None
+        if image.ndim != 4 or image.shape[0] == 0:
+            return None
+
+        idx = 0
+        teacher_pred = teacher_prob.argmax(dim=1)
+        teacher_fg = teacher_prob[:, 1:].max(dim=1).values if teacher_prob.shape[1] > 1 else teacher_prob[:, 0]
+        if student_prob is not None:
+            student_pred = student_prob.argmax(dim=1)
+            student_fg = student_prob[:, 1:].max(dim=1).values if student_prob.shape[1] > 1 else student_prob[:, 0]
+        else:
+            student_pred = torch.zeros_like(teacher_pred)
+            student_fg = torch.zeros_like(teacher_fg)
+        candidate_map = self._map_from_class_channels(targets["candidate_set"].bool())
+        negative_map = self._map_from_class_channels(targets["safe_negative_set"].bool())
+        panels = [
+            ("teacher_pred", teacher_pred[idx], "mask"),
+            ("teacher_fg_prob", teacher_fg[idx], "heatmap"),
+            ("student_pred", student_pred[idx], "mask"),
+            ("student_fg_prob", student_fg[idx], "heatmap"),
+            ("candidate_set", candidate_map[idx], "mask"),
+            ("safe_negative", negative_map[idx], "mask"),
+            ("ambiguous", targets["ambiguous_mask"][idx].float(), "heatmap"),
+            ("sam_train_gate", targets["sam_train_gate"][idx].float(), "heatmap"),
+        ]
+        if sam_u.get("valid") and sam_u.get("sam_prob") is not None:
+            sam_prob = sam_u["sam_prob"].detach()
+            sam_pred = sam_prob.argmax(dim=1)
+            sam_fg = sam_prob[:, 1:].max(dim=1).values if sam_prob.shape[1] > 1 else sam_prob[:, 0]
+            panels.extend([("sam_pred", sam_pred[idx], "mask"), ("sam_fg_prob", sam_fg[idx], "heatmap")])
+        if targets.get("sam_verifier_score") is not None:
+            panels.append(("sam_verifier", targets["sam_verifier_score"][idx], "heatmap"))
+
+        path = self.output_dir / "visualizations" / "train" / f"iter_{iteration:06d}.png"
+        save_diagnostic_grid(image[idx].detach(), panels, path, num_classes=self.num_classes, cols=4)
+        append_jsonl(
+            self.output_dir / "diagnostics.jsonl",
+            {"event": "train_visualization", "iteration": iteration, "path": str(path)},
+        )
+        return str(path)
+
+    def _add_baseline_gaps(self, metrics: dict) -> dict:
+        baseline_cfg = self.config.get("eval", {}).get("baseline", {})
+        if not baseline_cfg:
+            return metrics
+        if baseline_cfg.get("avg_dice") is not None:
+            metrics["baseline_gap_avg_dice"] = float(metrics.get("avg_dice", 0.0)) - float(baseline_cfg["avg_dice"])
+        baseline_class_dice = baseline_cfg.get("class_dice")
+        if isinstance(baseline_class_dice, (list, tuple)) and isinstance(metrics.get("class_dice"), list):
+            gaps = []
+            for idx, value in enumerate(metrics["class_dice"]):
+                base = baseline_class_dice[idx] if idx < len(baseline_class_dice) else None
+                gaps.append(float(value) - float(base) if base is not None else float("nan"))
+            metrics["baseline_gap_class_dice"] = gaps
+            for idx, gap in enumerate(gaps):
+                metrics[f"baseline_gap_class{idx}_dice"] = gap
+        return metrics
 
     def train_one_iter(self, batch_l, batch_u, iteration: int, update: bool = True, step_optimizer: bool = True):
         self.student.train()
@@ -844,6 +929,16 @@ class SAGESAMR6Trainer:
             **targets["stats"],
             **sup_logs,
         }
+        visual_path = self._maybe_save_training_visualization(
+            iteration,
+            x_u_w,
+            teacher_out["mean_prob"],
+            student_w_prob,
+            sam_u,
+            targets,
+        )
+        if visual_path:
+            logs["train_visualization"] = visual_path
         return logs
 
     def _supervised_branch_loss(self, out: dict, key: str, target: torch.Tensor):
@@ -982,6 +1077,7 @@ class SAGESAMR6Trainer:
             save_dir=None,
             ignore_index=self.ignore_index,
         )
+        metrics = self._add_baseline_gaps(metrics)
         row = {"iteration": iteration, "phase": "val", **metrics}
         append_jsonl(self.output_dir / "metrics.jsonl", row)
         ckpt_dir = self.output_dir / "checkpoints"
