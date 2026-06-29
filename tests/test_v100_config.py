@@ -38,7 +38,7 @@ def test_v100_tuned_config_matches_server_defaults():
 def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     cfg = load_yaml(ROOT / "configs/r7_3class_v100_tuned.yaml")
 
-    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned"
+    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_PriorAlign"
     assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
     assert cfg["train"]["deploy_best_checkpoint"] is True
     assert cfg["train"]["stop_on_val_collapse"] is True
@@ -49,6 +49,10 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["pseudo"]["bounded_safe_negative"] is True
     assert cfg["pseudo"]["bounded_foreground_candidates"] is True
     assert cfg["pseudo"]["use_labeled_foreground_prior"] is True
+    assert cfg["pseudo"]["use_labeled_prior_distribution_alignment"] is True
+    assert 0.0 < cfg["pseudo"]["prior_alignment_strength"] <= 0.5
+    assert cfg["pseudo"]["bounded_empty_foreground_fallback"] is True
+    assert cfg["pseudo"]["bounded_empty_candidate_recovery"] is True
     assert cfg["pseudo"]["foreground_prior_cap_multiplier"] <= 4.0
     assert cfg["pseudo"]["max_foreground_candidate_ratio"] <= 0.05
     assert cfg["pseudo"]["max_safe_negative_ratio_per_class"] <= 0.25
@@ -57,17 +61,20 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["pseudo"]["max_background_from_ceiling_ratio"] <= 0.10
     assert cfg["pseudo"]["background_candidate_min_confidence"] >= 0.65
     assert cfg["pseudo"]["sam_structure_mask_min_support"] >= 0.08
+    assert cfg["sam"]["losses"]["sam_sup_weight"] <= 0.30
     assert cfg["sam"]["losses"]["sam_unsup_weight"] == 0.0
     assert cfg["trust"]["max_candidate_foreground_ratio"] <= 0.25
+    assert cfg["trust"]["min_candidate_foreground_ratio"] <= 0.025
+    assert cfg["trust"]["min_class_foreground_ratio"] <= 0.004
     assert cfg["trust"]["max_class_foreground_ratio"][1] <= 0.14
     assert cfg["trust"]["min_sam_foreground_support_ratio"] >= 0.02
     assert cfg["trust"]["max_sam_gate_without_support"] <= 0.50
     assert cfg["trust"]["max_sam_gate_to_support_ratio"] <= 6.0
-    assert cfg["trust"]["max_pre_ceiling_foreground_ratio"][1] <= 0.30
+    assert cfg["trust"]["max_pre_ceiling_foreground_ratio"][1] <= 0.12
     assert cfg["trust"]["enabled"] is True
     assert cfg["trust"]["disable_correlation_when_unsafe"] is True
-    assert cfg["r6"]["foreground_grounding_start"] >= 2000
-    assert cfg["r6"]["stage1_unsup_max_scale"] <= 0.10
+    assert 1200 <= cfg["r6"]["foreground_grounding_start"] <= 1600
+    assert cfg["r6"]["stage1_unsup_max_scale"] <= 0.15
 
 
 def test_v100_launch_scripts_are_parameterized():

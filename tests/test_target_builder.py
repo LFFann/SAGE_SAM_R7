@@ -218,6 +218,52 @@ def test_r7_foreground_ceiling_blocks_class1_candidate_flooding():
     assert targets["stats"]["background_from_ceiling_ratio"] > 0.0
 
 
+def test_r7_prior_alignment_and_bounded_recovery_stop_pre_ceiling_flood():
+    cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
+    cal.teacher_q = torch.tensor([0.50, 0.50, 0.50])
+    cal.sam_q = torch.tensor([0.90, 0.90, 0.90])
+    teacher_prob = torch.full((1, 3, 10, 10), 0.05)
+    teacher_prob[:, 0] = 0.35
+    teacher_prob[:, 1] = 0.60
+    sam_prob = torch.full_like(teacher_prob, 0.01)
+
+    targets = build_set_valued_targets(
+        {"mean_prob": teacher_prob},
+        {"valid": True, "sam_prob": sam_prob, "prompt_quality": torch.ones(1, 3), "sam_iou": torch.ones(1, 3)},
+        cal,
+        {
+            "_iteration": 1500,
+            "foreground_classes": [1, 2],
+            "disable_background_unsup_until": 9999,
+            "sam_role": "verifier",
+            "use_labeled_prior_distribution_alignment": True,
+            "labeled_class_prior": [0.989, 0.006, 0.005],
+            "prior_alignment_strength": 0.35,
+            "prior_alignment_min_ratio": 0.10,
+            "prior_alignment_max_ratio": 5.0,
+            "bounded_empty_foreground_fallback": True,
+            "bounded_empty_candidate_recovery": True,
+            "bounded_foreground_candidates": True,
+            "max_fg_candidate_ratio_per_class": [0.0, 0.06, 0.04],
+            "max_foreground_candidate_ratio": 0.06,
+            "min_fg_pixels_per_class_ratio": 0.01,
+            "min_empty_foreground_score": 0.01,
+            "use_background_from_foreground_ceiling": False,
+            "bounded_safe_negative": True,
+            "safe_negative_to_positive_ratio": 1.0,
+            "max_safe_negative_ratio_per_class": 0.10,
+        },
+    )
+
+    stats = targets["stats"]
+    assert stats["prior_alignment_active"] == 1.0
+    assert stats["prior_alignment_after_mean_class1"] < stats["prior_alignment_before_mean_class1"]
+    assert stats["empty_candidate_recovery_raw_ratio"] > stats["empty_candidate_recovered_ratio"]
+    assert stats["bounded_empty_candidate_recovery_active"] == 1.0
+    assert stats["foreground_ceiling_before_ratio_class1"] <= 0.061
+    assert stats["candidate_foreground_ratio"] <= 0.101
+
+
 def test_r7_verifier_score_alone_does_not_open_global_sam_gate():
     cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
     teacher_prob = torch.full((1, 3, 10, 10), 0.02)

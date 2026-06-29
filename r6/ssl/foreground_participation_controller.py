@@ -162,21 +162,51 @@ def apply_foreground_budget(
     candidate_set[:, 0] = candidate_set[:, 0] & kept_background
     empty_candidate = candidate_set.sum(dim=1) == 0
     empty_recovered = torch.zeros_like(singleton_mask, dtype=torch.bool)
+    empty_recovered_raw = torch.zeros_like(singleton_mask, dtype=torch.bool)
     if empty_candidate.any() and num_classes > 1:
         min_empty_fg = float(config.get("min_empty_foreground_score", config.get("min_foreground_score", 0.02)))
         fg_score, fg_idx = foreground_score[:, 1:].max(dim=1)
-        has_fg_hint = empty_candidate & (fg_score >= min_empty_fg)
-        for cls in fg_classes:
-            if not (0 < cls < num_classes):
-                continue
-            promote = has_fg_hint & ((fg_idx + 1) == cls)
-            if int(promote.sum()) == 0:
-                continue
-            candidate_set[:, cls] = candidate_set[:, cls] | promote
-            ambiguous_mask = ambiguous_mask | promote
-            singleton_mask = singleton_mask & ~promote
-            promoted_any = promoted_any | promote
-            empty_recovered = empty_recovered | promote
+        empty_recovered_raw = empty_candidate & (fg_score >= min_empty_fg)
+        recover_empty = bool(config.get("recover_empty_candidates", True))
+        if recover_empty and bool(config.get("bounded_empty_candidate_recovery", False)):
+            scale = float(config.get("empty_candidate_recovery_cap_scale", 1.0))
+            for cls in fg_classes:
+                if not (0 < cls < num_classes):
+                    continue
+                hard_cls = singleton_mask & (singleton_label == cls)
+                soft_cls = ambiguous_mask & candidate_set[:, cls]
+                current = int((hard_cls | soft_cls).sum())
+                max_ratio_value = config.get("max_fg_candidate_ratio_per_class", config.get("max_foreground_candidate_ratio", 1.0))
+                if isinstance(max_ratio_value, dict):
+                    max_ratio = float(max_ratio_value.get(cls, max_ratio_value.get(str(cls), config.get("max_foreground_candidate_ratio", 1.0))))
+                elif isinstance(max_ratio_value, (list, tuple)):
+                    max_ratio = float(max_ratio_value[cls] if cls < len(max_ratio_value) else max_ratio_value[-1])
+                else:
+                    max_ratio = float(max_ratio_value)
+                max_pixels = max(min_pixels, int(round(total_pixels * max_ratio * scale)))
+                max_pixels = max(0, min(max_pixels, total_pixels))
+                keep = max(0, max_pixels - current)
+                promote_hint = empty_recovered_raw & ((fg_idx + 1) == cls)
+                promote = _topk_mask(foreground_score[:, cls], promote_hint, keep)
+                if int(promote.sum()) == 0:
+                    continue
+                candidate_set[:, cls] = candidate_set[:, cls] | promote
+                ambiguous_mask = ambiguous_mask | promote
+                singleton_mask = singleton_mask & ~promote
+                promoted_any = promoted_any | promote
+                empty_recovered = empty_recovered | promote
+        elif recover_empty:
+            for cls in fg_classes:
+                if not (0 < cls < num_classes):
+                    continue
+                promote = empty_recovered_raw & ((fg_idx + 1) == cls)
+                if int(promote.sum()) == 0:
+                    continue
+                candidate_set[:, cls] = candidate_set[:, cls] | promote
+                ambiguous_mask = ambiguous_mask | promote
+                singleton_mask = singleton_mask & ~promote
+                promoted_any = promoted_any | promote
+                empty_recovered = empty_recovered | promote
         empty_candidate = candidate_set.sum(dim=1) == 0
     ambiguous_mask = ambiguous_mask & (candidate_set.sum(dim=1) > 0)
 
@@ -198,6 +228,8 @@ def apply_foreground_budget(
         "emergency_mode": 1.0 if emergency_mode else 0.0,
         "foreground_promoted_ratio": float(promoted_any.float().mean().detach()),
         "empty_candidate_recovered_ratio": float(empty_recovered.float().mean().detach()),
+        "empty_candidate_recovery_raw_ratio": float(empty_recovered_raw.float().mean().detach()),
+        "bounded_empty_candidate_recovery_active": 1.0 if bool(config.get("bounded_empty_candidate_recovery", False)) else 0.0,
         "collapse_sentinel_active": 1.0 if collapse_active else 0.0,
         "collapse_disabled_background": 1.0 if collapse_disable_background else 0.0,
         "collapse_bg_hard_ratio_before": bg_ratio_before,

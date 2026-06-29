@@ -65,6 +65,44 @@ def _class_value(config: dict, key: str, cls: int, default: float) -> float:
     return float(value)
 
 
+def _align_teacher_to_labeled_prior(teacher_prob: torch.Tensor, config: dict) -> tuple[torch.Tensor, dict]:
+    if not bool(config.get("use_labeled_prior_distribution_alignment", False)):
+        return teacher_prob, {"prior_alignment_active": 0.0}
+
+    prior_value = config.get("labeled_class_prior")
+    if prior_value is None:
+        return teacher_prob, {"prior_alignment_active": 0.0}
+    prior = torch.as_tensor(prior_value, device=teacher_prob.device, dtype=teacher_prob.dtype)
+    if prior.numel() != teacher_prob.shape[1]:
+        return teacher_prob, {"prior_alignment_active": 0.0}
+
+    eps = teacher_prob.new_tensor(float(config.get("prior_alignment_eps", 1e-6)))
+    prior = prior.clamp_min(eps)
+    prior = prior / prior.sum().clamp_min(eps)
+    batch_mean = teacher_prob.mean(dim=(0, 2, 3)).clamp_min(eps)
+    min_ratio = float(config.get("prior_alignment_min_ratio", 0.10))
+    max_ratio = float(config.get("prior_alignment_max_ratio", 5.0))
+    strength = float(config.get("prior_alignment_strength", 0.35))
+    ratio = (prior / batch_mean).clamp(min_ratio, max_ratio)
+    adjust = ratio.pow(strength)
+    if not bool(config.get("prior_alignment_include_background", True)) and adjust.numel() > 0:
+        adjust = adjust.clone()
+        adjust[0] = 1.0
+    aligned = teacher_prob * adjust.view(1, -1, 1, 1)
+    aligned = aligned / aligned.sum(dim=1, keepdim=True).clamp_min(eps)
+    aligned_mean = aligned.mean(dim=(0, 2, 3))
+
+    stats = {
+        "prior_alignment_active": 1.0,
+        "prior_alignment_strength": strength,
+    }
+    for cls in range(teacher_prob.shape[1]):
+        stats[f"prior_alignment_before_mean_class{cls}"] = float(batch_mean[cls].detach())
+        stats[f"prior_alignment_after_mean_class{cls}"] = float(aligned_mean[cls].detach())
+        stats[f"prior_alignment_ratio_class{cls}"] = float(ratio[cls].detach())
+    return aligned, stats
+
+
 def _foreground_participation_stats(singleton_label, singleton_mask, candidate_set, ambiguous_mask, fg_classes):
     stats: dict[str, float] = {
         "background_hard_ratio": float(((singleton_mask & (singleton_label == 0)).float().mean()).detach()),
@@ -209,6 +247,7 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
     iter_now = int(config.get("_iteration", 0))
     disable_bg_until = int(config.get("disable_background_unsup_until", config.get("foreground_grounding_start", 1200)))
     use_background_hard = iter_now >= disable_bg_until
+    teacher_prob, prior_alignment_stats = _align_teacher_to_labeled_prior(teacher_prob, config)
 
     teacher_thresh = _threshold_vec(calibrator, "teacher_q", config.get("min_teacher_confidence", 0.5), num_classes, device, dtype)
     sam_thresh = _threshold_vec(calibrator, "sam_q", config.get("min_sam_confidence", 0.5), num_classes, device, dtype)
@@ -299,17 +338,38 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
 
     empty_before_fallback = candidate_set.sum(dim=1) == 0
     empty_fg_fallback = torch.zeros((bsz, height, width), device=device, dtype=torch.bool)
+    empty_fg_fallback_raw = torch.zeros((bsz, height, width), device=device, dtype=torch.bool)
     if empty_before_fallback.any() and num_classes > 1:
         support_boost = float(config.get("sam_fuzzy_support_weight", 0.25))
         fallback_score = torch.maximum(teacher_prob[:, 1:], sam_support[:, 1:] * support_boost)
         fallback_conf, _ = fallback_score.max(dim=1)
         min_empty_fg = float(config.get("min_empty_foreground_score", config.get("min_foreground_score", 0.02)))
-        empty_fg_fallback = empty_before_fallback & (fallback_conf >= min_empty_fg)
+        empty_fg_fallback_raw = empty_before_fallback & (fallback_conf >= min_empty_fg)
         topk_fg = _topk_foreground_candidates(
             fallback_score,
             int(config.get("empty_candidate_topk_foreground", 1)),
         )
-        candidate_set[:, 1:] = candidate_set[:, 1:] | (topk_fg & empty_fg_fallback.unsqueeze(1))
+        if bool(config.get("bounded_empty_foreground_fallback", False)):
+            total_pixels = int(empty_before_fallback.numel())
+            scale = float(config.get("empty_foreground_fallback_cap_scale", 1.0))
+            for cls in fg_classes:
+                rel_cls = cls - 1
+                if rel_cls < 0 or rel_cls >= topk_fg.shape[1]:
+                    continue
+                max_ratio = _class_value(
+                    config,
+                    "max_fg_candidate_ratio_per_class",
+                    cls,
+                    float(config.get("max_foreground_candidate_ratio", 1.0)),
+                )
+                max_pixels = max(0, min(total_pixels, int(round(total_pixels * max_ratio * scale))))
+                eligible = empty_fg_fallback_raw & topk_fg[:, rel_cls]
+                keep = _topk_mask(fallback_score[:, rel_cls], eligible, max_pixels)
+                candidate_set[:, cls] = candidate_set[:, cls] | keep
+                empty_fg_fallback = empty_fg_fallback | keep
+        else:
+            empty_fg_fallback = empty_fg_fallback_raw
+            candidate_set[:, 1:] = candidate_set[:, 1:] | (topk_fg & empty_fg_fallback.unsqueeze(1))
     has_fg_candidate = candidate_set[:, 1:].any(dim=1) if num_classes > 1 else torch.zeros_like(teacher_label, dtype=torch.bool)
     candidate_count = candidate_set.sum(dim=1)
     ambiguous_mask = ((candidate_count > 1) | (~singleton_mask & has_fg_candidate) | teacher_low) & (candidate_count > 0)
@@ -429,6 +489,7 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         "avg_set_size": float(candidate_set.float().sum(dim=1).mean().detach()),
         "empty_candidate_ratio": float((candidate_set.sum(dim=1) == 0).float().mean().detach()),
         "empty_foreground_fallback_ratio": float(empty_fg_fallback.float().mean().detach()),
+        "empty_foreground_fallback_raw_ratio": float(empty_fg_fallback_raw.float().mean().detach()),
         "candidate_foreground_ratio": float(candidate_foreground_mask.float().mean().detach()),
         "boundary_uncertain_ratio": float(boundary_uncertain.float().mean().detach()),
         "sam_semantic_gate_ratio": float(semantic_gate.float().mean().detach()),
@@ -450,6 +511,7 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         **budget_stats,
         **ceiling_stats,
         **negative_budget_stats,
+        **prior_alignment_stats,
     }
     for cls in fg_classes:
         stats[f"safe_negative_ratio_class{cls}"] = per_class_safe_negative[cls]

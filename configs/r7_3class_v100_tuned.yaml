@@ -1,6 +1,6 @@
 experiment:
-  name: SAGE_SAM_R7_3Class_V100_Tuned
-  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned
+  name: SAGE_SAM_R7_3Class_V100_Tuned_PriorAlign
+  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorAlign
   seed: 2026
   deterministic: false
 
@@ -96,29 +96,29 @@ sam:
     min_component_area: 16
     residual_scale: 0.10
   losses:
-    sam_sup_weight: 0.35
+    sam_sup_weight: 0.28
     sam_unsup_weight: 0.00
     sam_student_kd_weight: 0.03
     sam_boundary_weight: 0.02
     sam_relation_weight: 0.00
 
 r6:
-  foreground_grounding_start: 2000
+  foreground_grounding_start: 1500
   correlation_locality_start: 4500
   self_reliance_start: 6000
   disable_background_unsup_until: 2400
   min_fast_slow_agreement: 0.12
-  low_agreement_unsup_scale: 0.10
-  stage1_unsup_max_scale: 0.10
+  low_agreement_unsup_scale: 0.15
+  stage1_unsup_max_scale: 0.15
   stage1_sam_max_scale: 0.05
   self_reliance_ssl_scale: 0.35
 
 trust:
   enabled: true
   start_iter: 1000
-  min_candidate_foreground_ratio: 0.04
+  min_candidate_foreground_ratio: 0.025
   max_candidate_foreground_ratio: 0.22
-  min_class_foreground_ratio: 0.008
+  min_class_foreground_ratio: 0.004
   max_class_foreground_ratio: [0.0, 0.14, 0.10]
   max_safe_negative_pixel_ratio: 0.55
   max_class_safe_negative_ratio: 0.35
@@ -127,7 +127,7 @@ trust:
   max_sam_gate_without_support: 0.50
   max_sam_gate_to_support_ratio: 6.0
   sam_support_ratio_floor: 0.005
-  max_pre_ceiling_foreground_ratio: [0.0, 0.30, 0.20]
+  max_pre_ceiling_foreground_ratio: [0.0, 0.12, 0.10]
   low_support_sam_scale: 0.00
   sam_overgate_marks_unsafe: true
   unsafe_unsup_scale: 0.05
@@ -169,6 +169,11 @@ pseudo:
   bounded_safe_negative: true
   bounded_foreground_candidates: true
   use_labeled_foreground_prior: true
+  use_labeled_prior_distribution_alignment: true
+  prior_alignment_strength: 0.35
+  prior_alignment_min_ratio: 0.10
+  prior_alignment_max_ratio: 5.0
+  prior_alignment_include_background: true
   foreground_prior_cap_multiplier: 4.0
   foreground_prior_min_cap: 0.008
   foreground_prior_max_cap: 0.05
@@ -189,6 +194,10 @@ pseudo:
   safe_negative_max_prob: 0.35
   max_candidate_set_size: 2
   empty_candidate_topk_foreground: 1
+  bounded_empty_foreground_fallback: true
+  empty_foreground_fallback_cap_scale: 1.0
+  bounded_empty_candidate_recovery: true
+  empty_candidate_recovery_cap_scale: 1.0
   min_empty_foreground_score: 0.01
   min_teacher_confidence: 0.50
   min_sam_confidence: 0.60
