@@ -38,7 +38,7 @@ def test_v100_tuned_config_matches_server_defaults():
 def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     cfg = load_yaml(ROOT / "configs/r7_3class_v100_tuned.yaml")
 
-    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_PromptAudit"
+    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_MultiPrompt"
     assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
     assert cfg["train"]["deploy_best_checkpoint"] is True
     assert cfg["train"]["stop_on_val_collapse"] is True
@@ -72,6 +72,7 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["sam"]["prompt"]["use_point_prompt"] is False
     assert cfg["sam"]["prompt"]["max_box_area_ratio"] <= 0.12
     assert cfg["sam"]["prompt"]["fallback_box_half_size"] <= 0.035
+    assert cfg["sam"]["prompt"]["max_components_per_class"] >= 2
     assert cfg["sam"]["losses"]["sam_sup_weight"] <= 0.30
     assert cfg["sam"]["losses"]["sam_unsup_weight"] == 0.0
     assert cfg["sam"]["losses"]["sam_student_kd_weight"] <= 0.015
@@ -115,7 +116,7 @@ def test_r7_launch_scripts_are_parameterized():
     test_script = (ROOT / "scripts/test_r7_v100_tuned.sh").read_text(encoding="utf-8")
 
     assert "configs/r7_3class_v100_tuned.yaml" in train_script
-    assert "SAGE_SAM_R7_3Class_V100_Tuned_PromptAudit" in train_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned_MultiPrompt" in train_script
     assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
     assert "validate_r7.py" in test_script
     assert "test_r7.py" in test_script

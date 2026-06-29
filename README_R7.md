@@ -22,6 +22,10 @@ changes the semi-supervised loop:
    marked unreliable instead of falling back to full-image boxes. Training
    visualizations now include SAM prompt overlays and prompt heatmaps, while
    metrics record prompt validity and prompt/box area ratios.
+6. R7.3 adds component-aware multi-prompt SAM verification. A foreground class
+   can produce multiple connected-component prompts, so bilateral class-1
+   structures are decoded with separate SAM boxes/masks and merged back into
+   the original class before supervision.
 
 V100 training:
 
@@ -32,7 +36,7 @@ bash scripts/train_r7_v100_tuned.sh
 Resume or shorten:
 
 ```bash
-MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_PromptAudit/checkpoints/latest.pth \
+MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_MultiPrompt/checkpoints/latest.pth \
   bash scripts/train_r7_v100_tuned.sh
 ```
 
@@ -56,6 +60,7 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `sam_verifier_score_mean`
 - `sam_prompt_valid_mean`
 - `sam_prompt_box_area_ratio_mean`
+- `sam_prompt_component_count_class1`
 - `loss_sam_kd`
 
 The default R7 config uses adapter-only SAM PEFT, freezes the prompt encoder,

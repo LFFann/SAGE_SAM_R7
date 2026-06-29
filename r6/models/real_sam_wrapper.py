@@ -199,31 +199,18 @@ class RealSAMWrapper(nn.Module):
             multimask_output=multimask_output,
         )
         fg_logits_flat = F.interpolate(low_res_masks[:, :1], size=(h, w), mode="bilinear", align_corners=False)
-        fg = max(0, self.num_classes - 1)
-        expected_index = torch.arange(b, device=self.device).repeat_interleave(fg)
-        expected_class = torch.arange(1, self.num_classes, device=self.device).repeat(b)
-        if fg_logits_flat.shape[0] == b * fg and torch.equal(image_index, expected_index) and torch.equal(class_ids, expected_class):
-            fg_logits = fg_logits_flat[:, 0].reshape(b, fg, h, w)
-            fg_iou = torch.sigmoid(iou_predictions[:, 0]).reshape(b, fg)
-        else:
-            rows = []
-            iou_rows = []
-            for bi in range(b):
-                class_logits = []
-                class_iou = []
-                for ci in range(1, self.num_classes):
-                    match = (image_index == bi) & (class_ids == ci)
-                    if match.any():
-                        idx = torch.where(match)[0][0]
-                        class_logits.append(fg_logits_flat[idx, 0])
-                        class_iou.append(torch.sigmoid(iou_predictions[idx, 0]))
-                    else:
-                        class_logits.append(images.new_zeros((h, w)))
-                        class_iou.append(images.new_tensor(0.0))
-                rows.append(torch.stack(class_logits, dim=0))
-                iou_rows.append(torch.stack(class_iou, dim=0))
-            fg_logits = torch.stack(rows, dim=0)
-            fg_iou = torch.stack(iou_rows, dim=0)
+        prompt_weight = prompts.get("prompt_weight", prompts.get("prompt_valid_flat"))
+        fg_logits, fg_iou = self._aggregate_prompt_outputs(
+            fg_logits_flat,
+            iou_predictions,
+            image_index=image_index,
+            class_ids=class_ids,
+            prompt_weight=prompt_weight,
+            batch_size=b,
+            height=h,
+            width=w,
+            dtype=images.dtype,
+        )
 
         fg_prob = torch.sigmoid(fg_logits)
         bg_prob = (1.0 - fg_prob.max(dim=1, keepdim=True).values).clamp(1e-5, 1.0)
@@ -253,6 +240,46 @@ class RealSAMWrapper(nn.Module):
             "structure_gate": semantic_gate,
             "valid": True,
         }
+
+    def _aggregate_prompt_outputs(
+        self,
+        fg_logits_flat: torch.Tensor,
+        iou_predictions: torch.Tensor,
+        image_index: torch.Tensor,
+        class_ids: torch.Tensor,
+        prompt_weight: torch.Tensor | None,
+        batch_size: int,
+        height: int,
+        width: int,
+        dtype: torch.dtype,
+    ):
+        fg_prob_flat = torch.sigmoid(fg_logits_flat[:, 0])
+        if prompt_weight is None:
+            weights = torch.ones(fg_prob_flat.shape[0], device=fg_prob_flat.device, dtype=dtype)
+        else:
+            weights = prompt_weight.to(device=fg_prob_flat.device, dtype=dtype).flatten().clamp(0.0, 1.0)
+            if weights.numel() != fg_prob_flat.shape[0]:
+                weights = torch.ones(fg_prob_flat.shape[0], device=fg_prob_flat.device, dtype=dtype)
+        iou_flat = torch.sigmoid(iou_predictions[:, 0]).to(dtype=dtype)
+        rows = []
+        iou_rows = []
+        for bi in range(batch_size):
+            class_logits = []
+            class_iou = []
+            for ci in range(1, self.num_classes):
+                match = (image_index == bi) & (class_ids == ci)
+                if match.any() and bool((weights[match] > 0.0).any()):
+                    idx = torch.where(match)[0]
+                    weighted_prob = fg_prob_flat[idx] * weights[idx].view(-1, 1, 1)
+                    class_prob = weighted_prob.max(dim=0).values.clamp(1e-6, 1.0 - 1e-6)
+                    class_logits.append(torch.logit(class_prob))
+                    class_iou.append((iou_flat[idx] * weights[idx]).max())
+                else:
+                    class_logits.append(fg_logits_flat.new_full((height, width), torch.logit(fg_logits_flat.new_tensor(1e-6))))
+                    class_iou.append(fg_logits_flat.new_tensor(0.0))
+            rows.append(torch.stack(class_logits, dim=0))
+            iou_rows.append(torch.stack(class_iou, dim=0))
+        return torch.stack(rows, dim=0), torch.stack(iou_rows, dim=0)
 
     def propose(self, images: torch.Tensor, teacher_prob: torch.Tensor, ids=None, num_classes: int = 3):
         prompts = self._teacher_prompts(teacher_prob.detach(), num_classes=num_classes)

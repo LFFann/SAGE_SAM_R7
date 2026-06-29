@@ -62,6 +62,9 @@ def _window_summary(rows: list[dict[str, Any]], lo: int, hi: int) -> dict[str, A
         "sam_prompt_box_area_ratio_mean",
         "sam_prompt_box_area_ratio_class1",
         "sam_prompt_box_area_ratio_class2",
+        "sam_prompt_component_count_mean",
+        "sam_prompt_component_count_class1",
+        "sam_prompt_component_count_class2",
     ]
     return {"range": [lo, hi], "rows": len(win), **{key: _mean(win, key) for key in keys}}
 

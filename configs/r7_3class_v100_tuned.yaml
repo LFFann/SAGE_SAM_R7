@@ -1,6 +1,6 @@
 experiment:
-  name: SAGE_SAM_R7_3Class_V100_Tuned_PromptAudit
-  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_PromptAudit
+  name: SAGE_SAM_R7_3Class_V100_Tuned_MultiPrompt
+  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_MultiPrompt
   seed: 2026
   deterministic: false
 
@@ -99,6 +99,7 @@ sam:
     max_box_area_ratio: 0.12
     fallback_box_half_size: 0.035
     valid_min_peak: 0.20
+    max_components_per_class: 2
   losses:
     sam_sup_weight: 0.28
     sam_unsup_weight: 0.00

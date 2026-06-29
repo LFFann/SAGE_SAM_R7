@@ -121,3 +121,62 @@ def test_prompt_generator_invalid_foreground_uses_compact_fallback_box():
     assert torch.all(box_area < 0.02)
     assert torch.all(out["prompt_valid"][:, 1:] == 0)
     assert torch.all(out["prompt_quality"][:, 1:] == 0)
+
+
+def test_prompt_generator_splits_bilateral_class_into_component_prompts():
+    generator = PromptGenerator(
+        num_classes=3,
+        mask_prompt_size=8,
+        min_component_area=4,
+        residual_scale=0.0,
+        box_threshold=0.50,
+        max_components_per_class=2,
+    )
+    image = torch.zeros(1, 3, 16, 16)
+    teacher_prob = torch.zeros(1, 3, 16, 16)
+    teacher_prob[:, 0] = 0.98
+    teacher_prob[:, 1, 3:7, 2:5] = 0.90
+    teacher_prob[:, 1, 3:7, 11:14] = 0.88
+    teacher_prob[:, 0, 3:7, 2:5] = 0.05
+    teacher_prob[:, 0, 3:7, 11:14] = 0.05
+
+    out = generator(image=image, teacher_prob=teacher_prob, mode="unlabeled")
+
+    class1 = (out["class_ids"] == 1) & (out["prompt_valid_flat"] > 0)
+    boxes = out["boxes_xyxy"][class1]
+    centers_x = ((boxes[:, 0] + boxes[:, 2]) * 0.5).sort().values
+    assert int(class1.sum()) == 2
+    assert centers_x[0] < 0.35
+    assert centers_x[1] > 0.65
+    assert out["prompt_component_count"][0, 1] == 2
+    assert out["prompt_valid"][0, 1] == 1
+
+
+def test_real_sam_wrapper_merges_same_class_multi_prompt_outputs():
+    wrapper = RealSAMWrapper.__new__(RealSAMWrapper)
+    nn.Module.__init__(wrapper)
+    wrapper.num_classes = 3
+    logits_flat = torch.full((3, 1, 4, 4), -8.0)
+    logits_flat[0, 0, :, :2] = 8.0
+    logits_flat[1, 0, :, 2:] = 8.0
+    logits_flat[2, 0, :, :] = 8.0
+    iou = torch.ones(3, 1)
+
+    logits, merged_iou = wrapper._aggregate_prompt_outputs(
+        logits_flat,
+        iou,
+        image_index=torch.tensor([0, 0, 0]),
+        class_ids=torch.tensor([1, 1, 2]),
+        prompt_weight=torch.tensor([1.0, 1.0, 0.0]),
+        batch_size=1,
+        height=4,
+        width=4,
+        dtype=torch.float32,
+    )
+
+    prob = torch.sigmoid(logits)
+    assert prob[0, 0, :, :2].mean() > 0.99
+    assert prob[0, 0, :, 2:].mean() > 0.99
+    assert prob[0, 1].max() < 1e-4
+    assert merged_iou[0, 0] > 0.99
+    assert merged_iou[0, 1] == 0

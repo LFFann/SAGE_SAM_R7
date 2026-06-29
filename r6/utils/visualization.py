@@ -91,10 +91,13 @@ def prompt_overlay(image, prompt_info, num_classes: int = 3) -> np.ndarray:
     boxes = _to_numpy(boxes).astype(np.float32)
     image_index = _to_numpy(prompts.get("image_index", np.zeros((boxes.shape[0],), dtype=np.int64))).astype(np.int64)
     class_ids = _to_numpy(prompts.get("class_ids", np.ones((boxes.shape[0],), dtype=np.int64))).astype(np.int64)
+    component_ids = _to_numpy(prompts.get("component_index", np.zeros((boxes.shape[0],), dtype=np.int64))).astype(np.int64)
     points = prompts.get("point_coords")
     points = _to_numpy(points).astype(np.float32) if points is not None else None
     prompt_valid = prompts.get("prompt_valid")
     prompt_valid = _to_numpy(prompt_valid).astype(np.float32) if prompt_valid is not None else None
+    prompt_valid_flat = prompts.get("prompt_valid_flat")
+    prompt_valid_flat = _to_numpy(prompt_valid_flat).astype(np.float32) if prompt_valid_flat is not None else None
 
     for prompt_idx, box in enumerate(boxes):
         if prompt_idx < len(image_index) and int(image_index[prompt_idx]) != sample_index:
@@ -102,7 +105,9 @@ def prompt_overlay(image, prompt_info, num_classes: int = 3) -> np.ndarray:
         cls = int(class_ids[prompt_idx]) if prompt_idx < len(class_ids) else 1
         cls = max(1, min(cls, max(1, num_classes - 1)))
         valid = True
-        if prompt_valid is not None and sample_index < prompt_valid.shape[0] and cls < prompt_valid.shape[1]:
+        if prompt_valid_flat is not None and prompt_idx < prompt_valid_flat.shape[0]:
+            valid = bool(prompt_valid_flat[prompt_idx] >= 0.5)
+        elif prompt_valid is not None and sample_index < prompt_valid.shape[0] and cls < prompt_valid.shape[1]:
             valid = bool(prompt_valid[sample_index, cls] >= 0.5)
         color = tuple(int(x) for x in PALETTE[cls % len(PALETTE)]) if valid else (185, 185, 185)
         x0 = int(np.clip(box[0], 0.0, 1.0) * max(1, width - 1))
@@ -125,7 +130,8 @@ def prompt_overlay(image, prompt_info, num_classes: int = 3) -> np.ndarray:
             py = int(np.clip(points[prompt_idx, 0, 1], 0.0, 1.0) * max(1, height - 1))
             r = 3 if valid else 2
             draw.ellipse([px - r, py - r, px + r, py + r], fill=color)
-        label = f"c{cls}" if valid else f"c{cls} invalid"
+        comp = int(component_ids[prompt_idx]) if prompt_idx < len(component_ids) else 0
+        label = f"c{cls}#{comp}" if valid else f"c{cls}#{comp} invalid"
         draw.text((max(0, x0), max(0, y0 - 12)), label, fill=color)
     return np.asarray(base)
 

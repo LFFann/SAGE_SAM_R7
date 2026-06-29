@@ -624,7 +624,7 @@ class SAGESAMR6Trainer:
         if not isinstance(prompts, dict):
             return {}
         stats: dict[str, float] = {}
-        for key in ("prompt_valid", "prompt_area_ratio", "prompt_box_area_ratio"):
+        for key in ("prompt_valid", "prompt_area_ratio", "prompt_box_area_ratio", "prompt_component_count"):
             tensor = prompts.get(key)
             if tensor is None or not hasattr(tensor, "detach"):
                 continue
