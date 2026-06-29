@@ -38,7 +38,7 @@ def test_v100_tuned_config_matches_server_defaults():
 def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     cfg = load_yaml(ROOT / "configs/r7_3class_v100_tuned.yaml")
 
-    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_AgreementSAM"
+    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_PromptAudit"
     assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
     assert cfg["train"]["deploy_best_checkpoint"] is True
     assert cfg["train"]["stop_on_val_collapse"] is True
@@ -53,7 +53,10 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert 0.0 < cfg["pseudo"]["prior_alignment_strength"] <= 0.5
     assert cfg["pseudo"]["bounded_empty_foreground_fallback"] is True
     assert cfg["pseudo"]["bounded_empty_candidate_recovery"] is True
-    assert cfg["pseudo"]["foreground_prior_cap_multiplier"] <= 2.0
+    assert cfg["pseudo"]["foreground_prior_cap_multiplier"] <= 1.6
+    assert cfg["pseudo"]["foreground_prior_min_cap"] <= 0.006
+    assert cfg["pseudo"]["empty_foreground_fallback_cap_scale"] <= 0.75
+    assert cfg["pseudo"]["empty_candidate_recovery_cap_scale"] <= 0.75
     assert cfg["pseudo"]["max_foreground_candidate_ratio"] <= 0.05
     assert cfg["pseudo"]["max_safe_negative_ratio_per_class"] <= 0.25
     assert cfg["pseudo"]["max_fg_candidate_ratio_per_class"][1] <= 0.06
@@ -67,6 +70,8 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["pseudo"]["sam_kd_allow_boundary_without_support"] is False
     assert cfg["pseudo"]["sam_kd_min_verifier_score"] >= 0.30
     assert cfg["sam"]["prompt"]["use_point_prompt"] is False
+    assert cfg["sam"]["prompt"]["max_box_area_ratio"] <= 0.12
+    assert cfg["sam"]["prompt"]["fallback_box_half_size"] <= 0.035
     assert cfg["sam"]["losses"]["sam_sup_weight"] <= 0.30
     assert cfg["sam"]["losses"]["sam_unsup_weight"] == 0.0
     assert cfg["sam"]["losses"]["sam_student_kd_weight"] <= 0.015
@@ -110,7 +115,7 @@ def test_r7_launch_scripts_are_parameterized():
     test_script = (ROOT / "scripts/test_r7_v100_tuned.sh").read_text(encoding="utf-8")
 
     assert "configs/r7_3class_v100_tuned.yaml" in train_script
-    assert "SAGE_SAM_R7_3Class_V100_Tuned_AgreementSAM" in train_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned_PromptAudit" in train_script
     assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
     assert "validate_r7.py" in test_script
     assert "test_r7.py" in test_script

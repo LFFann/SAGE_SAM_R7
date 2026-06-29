@@ -24,6 +24,10 @@ class PromptableSAMMentor(nn.Module):
             mask_prompt_size=prompt_cfg.get("mask_prompt_size", 256),
             min_component_area=prompt_cfg.get("min_component_area", cfg.get("min_component_area", 16)),
             residual_scale=prompt_cfg.get("residual_scale", 0.15),
+            box_threshold=prompt_cfg.get("box_threshold", 0.35),
+            max_box_area_ratio=prompt_cfg.get("max_box_area_ratio", 0.12),
+            fallback_box_half_size=prompt_cfg.get("fallback_box_half_size", 0.035),
+            valid_min_peak=prompt_cfg.get("valid_min_peak", 0.20),
         )
         self.train_prompt_generator = bool(cfg.get("train_prompt_generator", True))
         if not self.train_prompt_generator:

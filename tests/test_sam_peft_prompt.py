@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from r6.models.prompt_generator import PromptGenerator
 from r6.models.real_sam_wrapper import RealSAMWrapper
 from r6.models.sam_peft import BlockWithAdapter, LoRALinear, SAMPEFTAdapter
 
@@ -96,3 +97,27 @@ def test_local_prompt_preparation_uses_points_negative_points_and_boxes():
     assert points[0].shape == (1, 2, 256)
     assert points[1].tolist() == [[1, 0]]
     assert boxes.shape == (1, 2, 256)
+
+
+def test_prompt_generator_invalid_foreground_uses_compact_fallback_box():
+    generator = PromptGenerator(
+        num_classes=3,
+        mask_prompt_size=8,
+        min_component_area=4,
+        residual_scale=0.0,
+        box_threshold=0.80,
+        fallback_box_half_size=0.05,
+    )
+    image = torch.zeros(1, 3, 8, 8)
+    teacher_prob = torch.zeros(1, 3, 8, 8)
+    teacher_prob[:, 0] = 0.98
+    teacher_prob[:, 1] = 0.01
+    teacher_prob[:, 2] = 0.01
+
+    out = generator(image=image, teacher_prob=teacher_prob, mode="unlabeled")
+
+    boxes = out["boxes_xyxy"]
+    box_area = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+    assert torch.all(box_area < 0.02)
+    assert torch.all(out["prompt_valid"][:, 1:] == 0)
+    assert torch.all(out["prompt_quality"][:, 1:] == 0)

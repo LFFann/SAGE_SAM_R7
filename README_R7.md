@@ -18,6 +18,10 @@ changes the semi-supervised loop:
    the ceiling may return as bounded high-confidence background candidates, so
    the unlabeled objective cannot collapse into all-background or all-foreground
    supervision.
+5. R7.2 adds prompt-audited AgreementSAM: invalid or over-large SAM prompts are
+   marked unreliable instead of falling back to full-image boxes. Training
+   visualizations now include SAM prompt overlays and prompt heatmaps, while
+   metrics record prompt validity and prompt/box area ratios.
 
 V100 training:
 
@@ -28,7 +32,7 @@ bash scripts/train_r7_v100_tuned.sh
 Resume or shorten:
 
 ```bash
-MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned/checkpoints/latest.pth \
+MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_PromptAudit/checkpoints/latest.pth \
   bash scripts/train_r7_v100_tuned.sh
 ```
 
@@ -50,6 +54,8 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `trust_high_candidate`
 - `trust_high_class`
 - `sam_verifier_score_mean`
+- `sam_prompt_valid_mean`
+- `sam_prompt_box_area_ratio_mean`
 - `loss_sam_kd`
 
 The default R7 config uses adapter-only SAM PEFT, freezes the prompt encoder,

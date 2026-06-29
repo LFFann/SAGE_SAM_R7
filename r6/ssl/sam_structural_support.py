@@ -74,6 +74,9 @@ def build_sam_structural_support(
             support[:, cls] = sam_prob[:, cls]
 
     prompt_quality = _spatial_quality(sam_out.get("prompt_quality"), num_classes, height, width, teacher_prob)
+    prompts = sam_out.get("prompts") if isinstance(sam_out, dict) else None
+    if isinstance(prompts, dict):
+        prompt_quality = prompt_quality * _spatial_quality(prompts.get("prompt_valid"), num_classes, height, width, teacher_prob)
     support = support * prompt_quality
 
     sam_iou_quality = _spatial_quality(sam_out.get("sam_iou"), num_classes, height, width, teacher_prob)

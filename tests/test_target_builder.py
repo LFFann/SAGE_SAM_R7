@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 
 from r6.calibration.prompt_reliability_calibrator import PromptReliabilityCalibrator
+from r6.ssl.sam_structural_support import build_sam_structural_support
 from r6.ssl.target_builder import build_set_valued_targets
 
 
@@ -48,6 +49,29 @@ def test_calibrator_coverage_fallback_keeps_soft_participation_nonzero():
 
     assert float(gates["sam_train_weight"].mean()) > 0.05
     assert float(gates["sam_train_gate"].float().mean()) >= 0.50
+
+
+def test_sam_structural_support_respects_prompt_valid_gate():
+    teacher_prob = torch.full((1, 3, 4, 4), 0.01)
+    teacher_prob[:, 0] = 0.98
+    sam_prob = torch.full_like(teacher_prob, 0.01)
+    sam_prob[:, 1] = 0.95
+    sam_prob[:, 2] = 0.85
+
+    support = build_sam_structural_support(
+        {
+            "valid": True,
+            "sam_prob": sam_prob,
+            "prompt_quality": torch.ones(1, 3),
+            "sam_iou": torch.ones(1, 3),
+            "prompts": {"prompt_valid": torch.tensor([[1.0, 0.0, 1.0]])},
+        },
+        teacher_prob,
+        foreground_classes=[1, 2],
+    )
+
+    assert support["support"][:, 1].sum() == 0
+    assert support["support"][:, 2].sum() > 0
 
 
 def test_r6_sam_foreground_support_does_not_create_background_hard_label():

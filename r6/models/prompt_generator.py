@@ -15,6 +15,10 @@ class PromptGenerator(nn.Module):
         mask_prompt_size: int = 256,
         min_component_area: int = 16,
         residual_scale: float = 0.15,
+        box_threshold: float = 0.35,
+        max_box_area_ratio: float = 0.12,
+        fallback_box_half_size: float = 0.035,
+        valid_min_peak: float = 0.20,
     ):
         super().__init__()
         self.num_classes = int(num_classes)
@@ -22,6 +26,10 @@ class PromptGenerator(nn.Module):
         self.mask_prompt_size = int(mask_prompt_size)
         self.min_component_area = int(min_component_area)
         self.residual_scale = float(residual_scale)
+        self.box_threshold = float(box_threshold)
+        self.max_box_area_ratio = float(max_box_area_ratio)
+        self.fallback_box_half_size = float(fallback_box_half_size)
+        self.valid_min_peak = float(valid_min_peak)
         refiner_in = 1 + 2 * self.num_foreground + 1
         hidden = max(16, min(64, refiner_in * 8))
         self.refiner = nn.Sequential(
@@ -81,11 +89,24 @@ class PromptGenerator(nn.Module):
             align_corners=False,
         ).reshape(b * self.num_foreground, 1, self.mask_prompt_size, self.mask_prompt_size)
 
-        prompt_quality_fg = self._quality(base, teacher_fg, gt_mask is not None)
+        (
+            boxes,
+            point_coords,
+            point_labels,
+            negative_point_coords,
+            prompt_valid_fg,
+            prompt_area_fg,
+            prompt_box_area_fg,
+        ) = self._metadata_from_masks(soft_prompt.detach())
+        prompt_quality_fg = self._quality(base, teacher_fg, gt_mask is not None) * prompt_valid_fg
         prompt_quality = image.new_ones((b, self.num_classes))
         prompt_quality[:, 1:] = prompt_quality_fg
-
-        boxes, point_coords, point_labels, negative_point_coords = self._metadata_from_masks(soft_prompt.detach())
+        prompt_valid = image.new_ones((b, self.num_classes))
+        prompt_valid[:, 1:] = prompt_valid_fg
+        prompt_area_ratio = image.new_zeros((b, self.num_classes))
+        prompt_area_ratio[:, 1:] = prompt_area_fg
+        prompt_box_area_ratio = image.new_zeros((b, self.num_classes))
+        prompt_box_area_ratio[:, 1:] = prompt_box_area_fg
         image_index = torch.arange(b, device=device).repeat_interleave(self.num_foreground)
         class_ids = torch.arange(1, self.num_classes, device=device).repeat(b)
         return {
@@ -98,6 +119,9 @@ class PromptGenerator(nn.Module):
             "image_index": image_index,
             "class_ids": class_ids,
             "prompt_quality": prompt_quality,
+            "prompt_valid": prompt_valid,
+            "prompt_area_ratio": prompt_area_ratio,
+            "prompt_box_area_ratio": prompt_box_area_ratio,
             "mode": mode,
         }
 
@@ -115,22 +139,50 @@ class PromptGenerator(nn.Module):
         boxes = []
         pos_points = []
         neg_points = []
+        valid_rows = []
+        area_rows = []
+        box_area_rows = []
         for bi in range(b):
             union_fg = masks[bi].max(dim=0).values
+            valid_per_image = []
+            area_per_image = []
+            box_area_per_image = []
             for ci in range(c):
-                m = masks[bi, ci] > 0.5
-                if int(m.sum()) >= self.min_component_area:
+                score = masks[bi, ci]
+                peak = score.max()
+                m = score > self.box_threshold
+                pixel_count = int(m.sum())
+                valid = pixel_count >= self.min_component_area and float(peak.detach()) >= self.valid_min_peak
+                if valid:
                     yy, xx = torch.where(m)
                     x0 = xx.min().float() / max(1, w - 1)
                     x1 = xx.max().float() / max(1, w - 1)
                     y0 = yy.min().float() / max(1, h - 1)
                     y1 = yy.max().float() / max(1, h - 1)
-                    px = xx.float().mean() / max(1, w - 1)
-                    py = yy.float().mean() / max(1, h - 1)
+                    weight = score[m].float().clamp_min(1e-6)
+                    px = (xx.float() * weight).sum() / weight.sum() / max(1, w - 1)
+                    py = (yy.float() * weight).sum() / weight.sum() / max(1, h - 1)
+                    box_area = ((xx.max().float() - xx.min().float() + 1.0) / max(1, w)) * (
+                        (yy.max().float() - yy.min().float() + 1.0) / max(1, h)
+                    )
+                    if float(box_area.detach()) > self.max_box_area_ratio:
+                        valid = False
                 else:
-                    x0 = y0 = torch.tensor(0.0, device=masks.device)
-                    x1 = y1 = torch.tensor(1.0, device=masks.device)
-                    px = py = torch.tensor(0.5, device=masks.device)
+                    box_area = score.new_tensor(0.0)
+                if not valid:
+                    peak_idx = score.reshape(-1).argmax()
+                    py_idx = torch.div(peak_idx, w, rounding_mode="floor").float()
+                    px_idx = (peak_idx % w).float()
+                    px = px_idx / max(1, w - 1)
+                    py = py_idx / max(1, h - 1)
+                    half = score.new_tensor(self.fallback_box_half_size)
+                    x0 = (px - half).clamp(0.0, 1.0)
+                    x1 = (px + half).clamp(0.0, 1.0)
+                    y0 = (py - half).clamp(0.0, 1.0)
+                    y1 = (py + half).clamp(0.0, 1.0)
+                    box_area = ((x1 - x0).clamp_min(0.0) * (y1 - y0).clamp_min(0.0)).detach()
+                area_ratio = score.new_tensor(float(pixel_count) / float(max(1, h * w)))
+                valid_value = score.new_tensor(1.0 if valid else 0.0)
                 bg = union_fg < 0.1
                 if bg.any():
                     yy_bg, xx_bg = torch.where(bg)
@@ -141,8 +193,22 @@ class PromptGenerator(nn.Module):
                 boxes.append(torch.stack([x0, y0, x1, y1]))
                 pos_points.append(torch.stack([px, py]).view(1, 2))
                 neg_points.append(torch.stack([nx, ny]).view(1, 2))
+                valid_per_image.append(valid_value)
+                area_per_image.append(area_ratio)
+                box_area_per_image.append(box_area.to(device=masks.device, dtype=masks.dtype))
+            valid_rows.append(torch.stack(valid_per_image, dim=0))
+            area_rows.append(torch.stack(area_per_image, dim=0))
+            box_area_rows.append(torch.stack(box_area_per_image, dim=0))
         boxes_t = torch.stack(boxes, dim=0)
         points_t = torch.stack(pos_points, dim=0)
         neg_t = torch.stack(neg_points, dim=0)
         labels_t = torch.ones(points_t.shape[:2], device=masks.device, dtype=torch.long)
-        return boxes_t, points_t, labels_t, neg_t
+        return (
+            boxes_t,
+            points_t,
+            labels_t,
+            neg_t,
+            torch.stack(valid_rows, dim=0),
+            torch.stack(area_rows, dim=0),
+            torch.stack(box_area_rows, dim=0),
+        )

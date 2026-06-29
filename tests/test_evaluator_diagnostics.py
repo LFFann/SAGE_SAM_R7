@@ -61,3 +61,25 @@ def test_diagnostic_grid_writes_png(tmp_path):
 
     assert path.exists()
     assert path.stat().st_size > 0
+
+
+def test_diagnostic_grid_writes_prompt_overlay(tmp_path):
+    path = tmp_path / "prompt_diag.png"
+    image = torch.zeros(3, 16, 16)
+    prompts = {
+        "boxes_xyxy": torch.tensor([[0.20, 0.20, 0.60, 0.60], [0.70, 0.70, 0.76, 0.76]]),
+        "point_coords": torch.tensor([[[0.40, 0.40]], [[0.73, 0.73]]]),
+        "image_index": torch.tensor([0, 0]),
+        "class_ids": torch.tensor([1, 2]),
+        "prompt_valid": torch.tensor([[1.0, 1.0, 0.0]]),
+    }
+
+    save_diagnostic_grid(
+        image,
+        [("sam_prompt", {"prompts": prompts, "sample_index": 0}, "prompt_overlay")],
+        path,
+        num_classes=3,
+    )
+
+    assert path.exists()
+    assert path.stat().st_size > 0

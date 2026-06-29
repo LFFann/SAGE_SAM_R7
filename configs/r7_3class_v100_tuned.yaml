@@ -1,6 +1,6 @@
 experiment:
-  name: SAGE_SAM_R7_3Class_V100_Tuned_AgreementSAM
-  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_AgreementSAM
+  name: SAGE_SAM_R7_3Class_V100_Tuned_PromptAudit
+  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_PromptAudit
   seed: 2026
   deterministic: false
 
@@ -95,6 +95,10 @@ sam:
     mask_prompt_size: 256
     min_component_area: 16
     residual_scale: 0.10
+    box_threshold: 0.35
+    max_box_area_ratio: 0.12
+    fallback_box_half_size: 0.035
+    valid_min_peak: 0.20
   losses:
     sam_sup_weight: 0.28
     sam_unsup_weight: 0.00
@@ -174,8 +178,8 @@ pseudo:
   prior_alignment_min_ratio: 0.10
   prior_alignment_max_ratio: 5.0
   prior_alignment_include_background: true
-  foreground_prior_cap_multiplier: 2.0
-  foreground_prior_min_cap: 0.008
+  foreground_prior_cap_multiplier: 1.6
+  foreground_prior_min_cap: 0.006
   foreground_prior_max_cap: 0.03
   max_foreground_candidate_ratio: 0.05
   max_fg_candidate_ratio_per_class: [0.0, 0.06, 0.04]
@@ -195,9 +199,9 @@ pseudo:
   max_candidate_set_size: 2
   empty_candidate_topk_foreground: 1
   bounded_empty_foreground_fallback: true
-  empty_foreground_fallback_cap_scale: 1.0
+  empty_foreground_fallback_cap_scale: 0.75
   bounded_empty_candidate_recovery: true
-  empty_candidate_recovery_cap_scale: 1.0
+  empty_candidate_recovery_cap_scale: 0.75
   min_empty_foreground_score: 0.01
   min_teacher_confidence: 0.50
   min_sam_confidence: 0.60

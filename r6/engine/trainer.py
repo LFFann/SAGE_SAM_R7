@@ -619,6 +619,25 @@ class SAGESAMR6Trainer:
             out = torch.where(tensor[:, cls].bool(), torch.full_like(out, cls), out)
         return out
 
+    def _prompt_stats(self, sam_out: dict) -> dict[str, float]:
+        prompts = sam_out.get("prompts") if isinstance(sam_out, dict) else None
+        if not isinstance(prompts, dict):
+            return {}
+        stats: dict[str, float] = {}
+        for key in ("prompt_valid", "prompt_area_ratio", "prompt_box_area_ratio"):
+            tensor = prompts.get(key)
+            if tensor is None or not hasattr(tensor, "detach"):
+                continue
+            values = tensor.detach().float()
+            if values.numel() == 0:
+                continue
+            fg_values = values[:, 1:] if values.ndim == 2 and values.shape[1] > 1 else values
+            stats[f"sam_{key}_mean"] = float(fg_values.mean())
+            if values.ndim == 2:
+                for cls in range(1, min(self.num_classes, values.shape[1])):
+                    stats[f"sam_{key}_class{cls}"] = float(values[:, cls].mean())
+        return stats
+
     def _maybe_save_training_visualization(
         self,
         iteration: int,
@@ -659,6 +678,13 @@ class SAGESAMR6Trainer:
             ("sam_train_gate", targets["sam_train_gate"][idx].float(), "heatmap"),
         ]
         if sam_u.get("valid") and sam_u.get("sam_prob") is not None:
+            prompts = sam_u.get("prompts")
+            if isinstance(prompts, dict):
+                panels.append(("sam_prompt", {"prompts": prompts, "sample_index": idx}, "prompt_overlay"))
+                soft_prompt = prompts.get("soft_prompt")
+                if soft_prompt is not None and soft_prompt.ndim == 4 and idx < soft_prompt.shape[0]:
+                    for fg_idx in range(min(self.num_classes - 1, soft_prompt.shape[1])):
+                        panels.append((f"prompt_c{fg_idx + 1}", soft_prompt[idx, fg_idx], "heatmap"))
             sam_prob = sam_u["sam_prob"].detach()
             sam_pred = sam_prob.argmax(dim=1)
             sam_fg = sam_prob[:, 1:].max(dim=1).values if sam_prob.shape[1] > 1 else sam_prob[:, 0]
@@ -890,6 +916,7 @@ class SAGESAMR6Trainer:
         prompt_quality = 0.0
         if sam_u.get("valid") and sam_u.get("prompt_quality") is not None:
             prompt_quality = float(sam_u["prompt_quality"].detach().mean())
+        prompt_stats = self._prompt_stats(sam_u)
         logs = {
             "loss_total": float(loss.detach()),
             "loss_sup": float(loss_sup.detach()),
@@ -934,6 +961,7 @@ class SAGESAMR6Trainer:
             "gradient_accumulation": float(self.grad_accum_steps),
             "lr": self.optimizer.param_groups[0]["lr"],
             "gpu_mem_mb": float(torch.cuda.max_memory_allocated() / 1024 / 1024) if self.device.type == "cuda" else 0.0,
+            **prompt_stats,
             **trust_logs,
             **targets["stats"],
             **sup_logs,
