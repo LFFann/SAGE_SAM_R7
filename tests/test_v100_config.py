@@ -38,7 +38,7 @@ def test_v100_tuned_config_matches_server_defaults():
 def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     cfg = load_yaml(ROOT / "configs/r7_3class_v100_tuned.yaml")
 
-    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_DiagPrior"
+    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_AgreementSAM"
     assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
     assert cfg["train"]["deploy_best_checkpoint"] is True
     assert cfg["train"]["stop_on_val_collapse"] is True
@@ -53,7 +53,7 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert 0.0 < cfg["pseudo"]["prior_alignment_strength"] <= 0.5
     assert cfg["pseudo"]["bounded_empty_foreground_fallback"] is True
     assert cfg["pseudo"]["bounded_empty_candidate_recovery"] is True
-    assert cfg["pseudo"]["foreground_prior_cap_multiplier"] <= 4.0
+    assert cfg["pseudo"]["foreground_prior_cap_multiplier"] <= 2.0
     assert cfg["pseudo"]["max_foreground_candidate_ratio"] <= 0.05
     assert cfg["pseudo"]["max_safe_negative_ratio_per_class"] <= 0.25
     assert cfg["pseudo"]["max_fg_candidate_ratio_per_class"][1] <= 0.06
@@ -62,16 +62,23 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["pseudo"]["max_background_from_ceiling_ratio"] <= 0.10
     assert cfg["pseudo"]["background_candidate_min_confidence"] >= 0.65
     assert cfg["pseudo"]["sam_structure_mask_min_support"] >= 0.08
+    assert cfg["pseudo"]["sam_train_gate_use_kd_agreement"] is True
+    assert cfg["pseudo"]["sam_kd_require_teacher_agreement"] is True
+    assert cfg["pseudo"]["sam_kd_allow_boundary_without_support"] is False
+    assert cfg["pseudo"]["sam_kd_min_verifier_score"] >= 0.30
+    assert cfg["sam"]["prompt"]["use_point_prompt"] is False
     assert cfg["sam"]["losses"]["sam_sup_weight"] <= 0.30
     assert cfg["sam"]["losses"]["sam_unsup_weight"] == 0.0
+    assert cfg["sam"]["losses"]["sam_student_kd_weight"] <= 0.015
     assert cfg["trust"]["max_candidate_foreground_ratio"] <= 0.25
     assert cfg["trust"]["min_candidate_foreground_ratio"] <= 0.025
     assert cfg["trust"]["min_class_foreground_ratio"][1] <= 0.004
     assert cfg["trust"]["min_class_foreground_ratio"][2] <= 0.004
     assert cfg["trust"]["max_class_foreground_ratio"][1] <= 0.14
-    assert cfg["trust"]["min_sam_foreground_support_ratio"] >= 0.02
-    assert cfg["trust"]["max_sam_gate_without_support"] <= 0.50
-    assert cfg["trust"]["max_sam_gate_to_support_ratio"] <= 6.0
+    assert cfg["trust"]["min_sam_foreground_support_ratio"] >= 0.006
+    assert cfg["trust"]["max_sam_gate_without_support"] <= 0.030
+    assert cfg["trust"]["max_sam_gate_to_support_ratio"] <= 3.0
+    assert cfg["trust"]["low_support_sam_scale"] <= 0.10
     assert cfg["trust"]["max_pre_ceiling_foreground_ratio"][1] <= 0.12
     assert cfg["trust"]["enabled"] is True
     assert cfg["trust"]["disable_correlation_when_unsafe"] is True
@@ -103,7 +110,7 @@ def test_r7_launch_scripts_are_parameterized():
     test_script = (ROOT / "scripts/test_r7_v100_tuned.sh").read_text(encoding="utf-8")
 
     assert "configs/r7_3class_v100_tuned.yaml" in train_script
-    assert "SAGE_SAM_R7_3Class_V100_Tuned_DiagPrior" in train_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned_AgreementSAM" in train_script
     assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
     assert "validate_r7.py" in test_script
     assert "test_r7.py" in test_script

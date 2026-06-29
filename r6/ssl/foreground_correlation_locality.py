@@ -108,8 +108,10 @@ def expand_targets_with_correlation(targets: dict, propagated: dict, min_weight:
     soft_target = soft_score / soft_score.sum(dim=1, keepdim=True).clamp_min(1e-6)
 
     candidate_weight = torch.maximum(targets["candidate_weight"].float(), weights.clamp(0.0, 1.0))
-    old_sam_gate = targets.get("sam_region_gate", targets.get("sam_train_gate")).bool()
-    sam_gate = old_sam_gate | mask
+    old_region_gate = targets.get("sam_region_gate", targets.get("sam_train_gate")).bool()
+    sam_region_gate = old_region_gate | mask
+    sam_train_gate = targets.get("sam_train_gate", old_region_gate).bool()
+    sam_kd_gate = targets.get("sam_kd_gate", sam_train_gate).bool()
     structure_gate = targets["structure_gate"].bool() | mask
     sam_weight = torch.where(mask, torch.maximum(targets["sam_weight"].float(), weights), targets["sam_weight"].float())
 
@@ -124,10 +126,12 @@ def expand_targets_with_correlation(targets: dict, propagated: dict, min_weight:
             "negative_mask": negative_mask.detach(),
             "safe_negative_weight": negative_mask.float().detach(),
             "soft_target": soft_target.detach(),
-            "sam_train_gate": sam_gate.detach(),
-            "sam_region_gate": sam_gate.detach(),
+            "sam_train_gate": sam_train_gate.detach(),
+            "sam_region_gate": sam_region_gate.detach(),
+            "sam_kd_gate": sam_kd_gate.detach(),
             "structure_gate": structure_gate.detach(),
             "sam_weight": sam_weight.detach(),
+            "sam_kd_weight": targets.get("sam_kd_weight", targets["sam_weight"]).detach(),
             "structure_weight": torch.maximum(out["structure_weight"].float(), sam_weight).clamp(0.0, 1.0).detach(),
         }
     )
@@ -135,7 +139,9 @@ def expand_targets_with_correlation(targets: dict, propagated: dict, min_weight:
     stats["foreground_propagated_ratio"] = float(mask.float().mean().detach())
     stats["avg_set_size"] = float(candidate_set.float().sum(dim=1).mean().detach())
     stats["pseudo_set_size_mean"] = stats["avg_set_size"]
-    stats["sam_train_gate_ratio"] = float(sam_gate.float().mean().detach())
+    stats["sam_region_gate_ratio"] = float(sam_region_gate.float().mean().detach())
+    stats["sam_train_gate_ratio"] = float(sam_train_gate.float().mean().detach())
+    stats["sam_kd_agreement_gate_ratio"] = float(sam_kd_gate.float().mean().detach())
     stats["sam_participation_ratio"] = stats["sam_train_gate_ratio"]
     stats["negative_ratio"] = float(negative_mask.float().mean().detach())
     stats["safe_negative_pixel_ratio"] = float(negative_set.any(dim=1).float().mean().detach())

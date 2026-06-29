@@ -43,8 +43,14 @@ def _window_summary(rows: list[dict[str, Any]], lo: int, hi: int) -> dict[str, A
         "candidate_foreground_ratio",
         "soft_fg_ratio_class1",
         "soft_fg_ratio_class2",
+        "sam_region_gate_ratio",
+        "sam_kd_agreement_gate_ratio",
         "sam_train_gate_ratio",
         "sam_foreground_support_ratio",
+        "sam_gate_to_support_ratio",
+        "sam_region_to_support_ratio",
+        "sam_kd_effective_weight",
+        "loss_sam_kd",
         "sam_adapter_grad_norm",
     ]
     return {"range": [lo, hi], "rows": len(win), **{key: _mean(win, key) for key in keys}}

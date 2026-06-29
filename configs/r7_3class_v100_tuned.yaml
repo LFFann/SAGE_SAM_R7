@@ -1,6 +1,6 @@
 experiment:
-  name: SAGE_SAM_R7_3Class_V100_Tuned_DiagPrior
-  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_DiagPrior
+  name: SAGE_SAM_R7_3Class_V100_Tuned_AgreementSAM
+  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_AgreementSAM
   seed: 2026
   deterministic: false
 
@@ -90,15 +90,15 @@ sam:
   prompt:
     use_mask_prompt: true
     use_box_prompt: true
-    use_point_prompt: true
-    use_negative_points: true
+    use_point_prompt: false
+    use_negative_points: false
     mask_prompt_size: 256
     min_component_area: 16
     residual_scale: 0.10
   losses:
     sam_sup_weight: 0.28
     sam_unsup_weight: 0.00
-    sam_student_kd_weight: 0.03
+    sam_student_kd_weight: 0.015
     sam_boundary_weight: 0.02
     sam_relation_weight: 0.00
 
@@ -123,12 +123,12 @@ trust:
   max_safe_negative_pixel_ratio: 0.55
   max_class_safe_negative_ratio: 0.35
   max_background_hard_ratio: 0.35
-  min_sam_foreground_support_ratio: 0.02
-  max_sam_gate_without_support: 0.50
-  max_sam_gate_to_support_ratio: 6.0
-  sam_support_ratio_floor: 0.005
+  min_sam_foreground_support_ratio: 0.006
+  max_sam_gate_without_support: 0.030
+  max_sam_gate_to_support_ratio: 3.0
+  sam_support_ratio_floor: 0.004
   max_pre_ceiling_foreground_ratio: [0.0, 0.12, 0.10]
-  low_support_sam_scale: 0.00
+  low_support_sam_scale: 0.10
   sam_overgate_marks_unsafe: true
   unsafe_unsup_scale: 0.05
   unsafe_sam_scale: 0.10
@@ -174,9 +174,9 @@ pseudo:
   prior_alignment_min_ratio: 0.10
   prior_alignment_max_ratio: 5.0
   prior_alignment_include_background: true
-  foreground_prior_cap_multiplier: 4.0
+  foreground_prior_cap_multiplier: 2.0
   foreground_prior_min_cap: 0.008
-  foreground_prior_max_cap: 0.05
+  foreground_prior_max_cap: 0.03
   max_foreground_candidate_ratio: 0.05
   max_fg_candidate_ratio_per_class: [0.0, 0.06, 0.04]
   foreground_ceiling_verifier_weight: 0.15
@@ -201,6 +201,12 @@ pseudo:
   min_empty_foreground_score: 0.01
   min_teacher_confidence: 0.50
   min_sam_confidence: 0.60
+  sam_train_gate_use_kd_agreement: true
+  sam_kd_require_teacher_agreement: true
+  sam_kd_allow_boundary_without_support: false
+  sam_kd_min_support: 0.08
+  sam_kd_min_teacher_confidence: 0.03
+  sam_kd_min_verifier_score: 0.30
   min_foreground_score: 0.01
   min_fg_pixels_per_class_ratio: [0.0, 0.006, 0.008]
   max_background_hard_ratio: 0.35

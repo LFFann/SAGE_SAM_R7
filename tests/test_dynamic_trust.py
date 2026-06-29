@@ -91,3 +91,53 @@ def test_dynamic_trust_catches_pre_ceiling_flood_and_sam_overgate():
     assert logs["trust_sam_overgate"] == 1.0
     assert weights["unsup"] == 0.05
     assert weights["sam"] == 0.0
+
+
+def test_dynamic_trust_scales_sam_when_support_is_low_even_without_overgate():
+    trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
+    trainer.num_classes = 3
+    trainer.config = {
+        "pseudo": {"foreground_classes": [1, 2]},
+        "trust": {
+            "enabled": True,
+            "start_iter": 1000,
+            "min_candidate_foreground_ratio": 0.02,
+            "max_candidate_foreground_ratio": 0.20,
+            "min_class_foreground_ratio": 0.004,
+            "max_safe_negative_pixel_ratio": 0.65,
+            "max_class_safe_negative_ratio": 0.50,
+            "max_background_hard_ratio": 0.45,
+            "min_sam_foreground_support_ratio": 0.006,
+            "max_sam_gate_without_support": 0.03,
+            "max_sam_gate_to_support_ratio": 10.0,
+            "sam_support_ratio_floor": 0.004,
+            "low_support_sam_scale": 0.10,
+            "unsafe_unsup_scale": 0.05,
+            "unsafe_sam_scale": 0.10,
+            "unsafe_negative_scale": 0.0,
+        },
+    }
+    targets = {
+        "stats": {
+            "candidate_foreground_ratio": 0.04,
+            "safe_negative_pixel_ratio": 0.02,
+            "background_hard_ratio": 0.0,
+            "per_class_foreground_participation_ratio": [0.0, 0.02, 0.02],
+            "per_class_safe_negative_ratio": [0.0, 0.01, 0.01],
+            "sam_foreground_support_ratio": 0.003,
+            "sam_train_gate_ratio": 0.02,
+            "foreground_ceiling_before_ratio_class1": 0.02,
+            "foreground_ceiling_before_ratio_class2": 0.02,
+        },
+    }
+
+    _, weights, logs = trainer._apply_dynamic_trust(
+        2000,
+        targets,
+        {"unsup": 1.0, "sam": 1.0, "correlation": 1.0, "locality": 1.0},
+    )
+
+    assert logs["trust_low_sam_support"] == 1.0
+    assert logs["trust_sam_overgate"] == 0.0
+    assert weights["unsup"] == 1.0
+    assert weights["sam"] == 0.10

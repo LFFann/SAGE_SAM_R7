@@ -562,7 +562,7 @@ class SAGESAMR6Trainer:
         )
         trust_unsup_scale = float(cfg.get("unsafe_unsup_scale", 0.25)) if unsafe else 1.0
         trust_sam_scale = float(cfg.get("unsafe_sam_scale", trust_unsup_scale)) if unsafe else 1.0
-        if sam_overgate:
+        if low_sam_support or sam_overgate:
             trust_sam_scale = min(trust_sam_scale, float(cfg.get("low_support_sam_scale", 0.0)))
         trust_negative_scale = float(cfg.get("unsafe_negative_scale", 0.0)) if unsafe else 1.0
         out_weights = dict(stage_weights)
@@ -800,11 +800,16 @@ class SAGESAMR6Trainer:
                     loss_local = masked_locality_proxy_loss(out_local["logits"], targets, pseudo_cfg.get("rank_margin", 0.5))
 
             if self.use_sam and sam_u.get("valid"):
-                foreground_mask = build_foreground_structure_mask(targets)
+                foreground_mask = targets.get("sam_kd_gate")
                 if foreground_mask is None:
-                    foreground_mask = targets.get("sam_region_gate", targets["sam_train_gate"]).bool()
+                    foreground_mask = build_foreground_structure_mask(targets)
+                if foreground_mask is None:
+                    foreground_mask = targets.get("sam_train_gate", targets.get("sam_region_gate")).bool()
                 foreground_mask = foreground_mask.to(device=out_s1["logits"].device).bool()
-                sam_base_weight = targets.get("structure_weight", targets["sam_weight"]).to(device=foreground_mask.device).float()
+                sam_base_weight = targets.get(
+                    "sam_kd_weight",
+                    targets.get("structure_weight", targets["sam_weight"]),
+                ).to(device=foreground_mask.device).float()
                 sam_gate_weight = sam_base_weight * foreground_mask.float()
                 sam_kd_gate_ratio = float(foreground_mask.float().mean().detach())
                 sam_kd_gate_weight_mean = float(sam_gate_weight.mean().detach())
@@ -844,6 +849,7 @@ class SAGESAMR6Trainer:
             sam_sup_scale = 1.0 if self.config.get("sam", {}).get("keep_labeled_sam_sup", True) else sam_scale
             unsup_scale = ramp * float(stage_weights["unsup"])
             sam_ssl_scale = sam_scale * float(stage_weights["sam"])
+            sam_kd_loss_weight = float(sam_loss_cfg.get("sam_student_kd_weight", self.sam_utility.semantic_weight(iteration)))
             loss = (
                 loss_sup
                 + sam_sup_scale * sam_loss_cfg.get("sam_sup_weight", self.config.get("sam", {}).get("sam_sup_weight", 0.5)) * loss_sam_sup
@@ -856,7 +862,7 @@ class SAGESAMR6Trainer:
                     + sam_ssl_scale
                     * (
                         sam_loss_cfg.get("sam_unsup_weight", 0.2) * loss_sam_unsup
-                        + sam_loss_cfg.get("sam_student_kd_weight", self.sam_utility.semantic_weight(iteration)) * loss_kd
+                        + sam_kd_loss_weight * loss_kd
                         + sam_loss_cfg.get("sam_relation_weight", pseudo_cfg.get("relation_weight", 0.05)) * loss_relation
                         + sam_loss_cfg.get("sam_boundary_weight", pseudo_cfg.get("boundary_weight", 0.05)) * loss_boundary
                     )
@@ -913,6 +919,9 @@ class SAGESAMR6Trainer:
             "r6_low_agreement": float(stage_weights["low_agreement"]),
             "sam_self_reliance_scale": sam_scale,
             "sam_semantic_weight": self.sam_utility.semantic_weight(iteration),
+            "sam_ssl_scale": float(sam_ssl_scale),
+            "sam_kd_loss_weight": float(sam_kd_loss_weight),
+            "sam_kd_effective_weight": float(unsup_scale * sam_ssl_scale * sam_kd_loss_weight),
             "sam_utility_ema": float(self.sam_utility.utility_ema),
             "sam_utility_disabled": 1.0 if self.sam_utility.disabled else 0.0,
             "fast_slow_agreement": float(teacher_out["agreement"].detach()),

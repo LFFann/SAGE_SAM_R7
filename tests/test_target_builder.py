@@ -300,6 +300,42 @@ def test_r7_verifier_score_alone_does_not_open_global_sam_gate():
     assert float(targets["sam_train_gate"].float().mean()) < float(targets["sam_verifier_score"].ge(0.20).float().mean())
 
 
+def test_r7_sam_kd_gate_requires_classwise_sam_teacher_agreement():
+    cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
+    cal.teacher_q = torch.tensor([0.50, 0.50, 0.50])
+    cal.sam_q = torch.tensor([0.50, 0.50, 0.50])
+    teacher_prob = torch.full((1, 3, 10, 10), 0.02)
+    teacher_prob[:, 0] = 0.38
+    teacher_prob[:, 1] = 0.60
+    teacher_prob[:, 2] = 0.02
+    sam_prob = torch.full_like(teacher_prob, 0.01)
+    sam_prob[:, 1] = 0.02
+
+    targets = build_set_valued_targets(
+        {"mean_prob": teacher_prob},
+        {"valid": True, "sam_prob": sam_prob, "prompt_quality": torch.ones(1, 3), "sam_iou": torch.ones(1, 3)},
+        cal,
+        {
+            "_iteration": 1800,
+            "foreground_classes": [1, 2],
+            "sam_role": "verifier",
+            "bounded_foreground_candidates": True,
+            "max_fg_candidate_ratio_per_class": [0.0, 0.12, 0.08],
+            "min_fg_pixels_per_class_ratio": 0.01,
+            "sam_train_gate_use_kd_agreement": True,
+            "sam_kd_min_support": 0.08,
+            "sam_kd_min_teacher_confidence": 0.03,
+            "sam_kd_min_verifier_score": 0.30,
+        },
+    )
+
+    assert targets["stats"]["sam_region_gate_ratio"] > 0.0
+    assert targets["stats"]["sam_kd_agreement_gate_ratio"] == 0.0
+    assert targets["stats"]["sam_train_gate_ratio"] == 0.0
+    assert targets["sam_kd_gate"].sum() == 0
+    assert targets["sam_kd_weight"].sum() == 0
+
+
 def test_r6_collapse_sentinel_blocks_background_takeover_and_forces_fg_candidates():
     cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
     cal.teacher_q = torch.tensor([0.50, 0.50, 0.50])

@@ -456,7 +456,31 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         | sam_support_gate
         | boundary_uncertain
     ) & bool(sam_valid)
-    sam_train_gate = sam_region_gate
+
+    sam_kd_class_gate = torch.zeros_like(candidate_set, dtype=torch.bool)
+    sam_kd_support_min = float(config.get("sam_kd_min_support", structure_support_min))
+    sam_kd_teacher_min = float(config.get("sam_kd_min_teacher_confidence", min_fg_score))
+    sam_kd_verifier_min = float(config.get("sam_kd_min_verifier_score", min_verifier_score))
+    require_teacher_agreement = bool(config.get("sam_kd_require_teacher_agreement", True))
+    for cls in fg_classes:
+        if not (0 < cls < candidate_set.shape[1]):
+            continue
+        sam_cls_ok = (sam_support[:, cls] >= sam_kd_support_min) & (verifier_score >= sam_kd_verifier_min)
+        teacher_cls_ok = (
+            (teacher_prob[:, cls] >= sam_kd_teacher_min)
+            | foreground_seed[:, cls]
+            | (ambiguous_mask & candidate_set[:, cls])
+        )
+        sam_kd_class_gate[:, cls] = sam_cls_ok & (teacher_cls_ok if require_teacher_agreement else True)
+    sam_kd_gate = sam_kd_class_gate[:, 1:].any(dim=1) if num_classes > 1 else torch.zeros_like(singleton_mask)
+    if bool(config.get("sam_kd_allow_boundary_without_support", False)):
+        sam_kd_gate = sam_kd_gate | (boundary_uncertain & candidate_foreground_mask)
+    sam_kd_gate = sam_kd_gate & bool(sam_valid)
+
+    if bool(config.get("sam_train_gate_use_kd_agreement", True)):
+        sam_train_gate = sam_kd_gate
+    else:
+        sam_train_gate = sam_region_gate
     structure_gate = sam_support_gate | foreground_seed_mask | fuzzy_region | conflict_mask | boundary_uncertain
     sam_structure_support_mask = structure_gate & (
         candidate_foreground_mask | sam_support_gate | fuzzy_region | conflict_mask | boundary_uncertain
@@ -465,7 +489,9 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
     sam_weight = torch.maximum(sam_weight, fg_support).clamp(0.0, 1.0)
     sam_weight = torch.maximum(sam_weight, verifier_score * candidate_foreground_mask.float()).clamp(0.0, 1.0)
     min_sam_region_weight = float(config.get("sam_region_min_weight", 0.05))
-    sam_weight = torch.where(sam_region_gate, sam_weight.clamp_min(min_sam_region_weight), sam_weight.new_zeros(sam_weight.shape))
+    sam_region_weight = torch.where(sam_region_gate, sam_weight.clamp_min(min_sam_region_weight), sam_weight.new_zeros(sam_weight.shape))
+    sam_kd_weight = torch.where(sam_kd_gate, sam_weight.clamp_min(min_sam_region_weight), sam_weight.new_zeros(sam_weight.shape))
+    sam_weight = torch.where(sam_train_gate, sam_weight.clamp_min(min_sam_region_weight), sam_weight.new_zeros(sam_weight.shape))
     structure_weight = torch.maximum(sam_weight, fg_support).clamp(0.0, 1.0)
 
     per_class_participation = [0.0 for _ in range(num_classes)]
@@ -495,10 +521,14 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         "boundary_uncertain_ratio": float(boundary_uncertain.float().mean().detach()),
         "sam_semantic_gate_ratio": float(semantic_gate.float().mean().detach()),
         "sam_structure_gate_ratio": float(structure_gate.float().mean().detach()),
+        "sam_region_gate_ratio": float(sam_region_gate.float().mean().detach()),
         "sam_support_gate_ratio": float(sam_support_gate.float().mean().detach()),
+        "sam_kd_agreement_gate_ratio": float(sam_kd_gate.float().mean().detach()),
         "sam_structure_support_mask_ratio": float(sam_structure_support_mask.float().mean().detach()),
         "sam_train_gate_ratio": float(sam_train_gate.float().mean().detach()),
         "sam_soft_weight_mean": float(sam_weight.mean().detach()),
+        "sam_region_weight_mean": float(sam_region_weight.mean().detach()),
+        "sam_kd_weight_mean": float(sam_kd_weight.mean().detach()),
         "sam_soft_weight_p25": float(torch.quantile(sam_weight.detach().float().reshape(-1).cpu(), 0.25)),
         "sam_soft_weight_p50": float(torch.quantile(sam_weight.detach().float().reshape(-1).cpu(), 0.50)),
         "sam_soft_weight_p75": float(torch.quantile(sam_weight.detach().float().reshape(-1).cpu(), 0.75)),
@@ -507,6 +537,14 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         "per_class_foreground_participation_ratio": per_class_foreground_participation,
         "sam_teacher_agreement": float(((teacher_label == singleton_label) | ambiguous_mask).float().mean().detach()),
         "sam_foreground_support_ratio": float((fg_support >= fg_low).float().mean().detach()),
+        "sam_gate_to_support_ratio": float(
+            sam_train_gate.float().mean().detach()
+            / torch.clamp((fg_support >= fg_low).float().mean().detach(), min=teacher_prob.new_tensor(1e-6))
+        ),
+        "sam_region_to_support_ratio": float(
+            sam_region_gate.float().mean().detach()
+            / torch.clamp((fg_support >= fg_low).float().mean().detach(), min=teacher_prob.new_tensor(1e-6))
+        ),
         "sam_verifier_score_mean": float(verifier_score.mean().detach()),
         "sam_verifier_gate_ratio": float((verifier_score >= min_verifier_score).float().mean().detach()),
         **budget_stats,
@@ -532,9 +570,13 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         "semantic_gate": semantic_gate.detach(),
         "sam_train_gate": sam_train_gate.detach(),
         "sam_region_gate": sam_region_gate.detach(),
+        "sam_kd_gate": sam_kd_gate.detach(),
+        "sam_kd_class_gate": sam_kd_class_gate.detach(),
         "structure_gate": structure_gate.detach(),
         "sam_structure_support_mask": sam_structure_support_mask.detach(),
         "sam_weight": sam_weight.detach(),
+        "sam_region_weight": sam_region_weight.detach(),
+        "sam_kd_weight": sam_kd_weight.detach(),
         "teacher_weight": teacher_conf.detach(),
         "semantic_weight": candidate_weight.detach(),
         "structure_weight": structure_weight.detach(),
