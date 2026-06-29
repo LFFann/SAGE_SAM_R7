@@ -152,6 +152,38 @@ def test_prompt_generator_splits_bilateral_class_into_component_prompts():
     assert out["prompt_valid"][0, 1] == 1
 
 
+def test_prompt_generator_uses_class_specific_component_caps():
+    generator = PromptGenerator(
+        num_classes=3,
+        mask_prompt_size=8,
+        min_component_area=4,
+        residual_scale=0.0,
+        box_threshold=0.50,
+        max_components_per_class=[0, 2, 1],
+    )
+    image = torch.zeros(1, 3, 16, 16)
+    teacher_prob = torch.zeros(1, 3, 16, 16)
+    teacher_prob[:, 0] = 0.98
+    teacher_prob[:, 1, 3:7, 2:5] = 0.90
+    teacher_prob[:, 1, 3:7, 11:14] = 0.88
+    teacher_prob[:, 2, 10:14, 2:5] = 0.92
+    teacher_prob[:, 2, 10:14, 11:14] = 0.89
+    teacher_prob[:, 0, 3:7, 2:5] = 0.05
+    teacher_prob[:, 0, 3:7, 11:14] = 0.05
+    teacher_prob[:, 0, 10:14, 2:5] = 0.05
+    teacher_prob[:, 0, 10:14, 11:14] = 0.05
+
+    out = generator(image=image, teacher_prob=teacher_prob, mode="unlabeled")
+
+    class1 = (out["class_ids"] == 1) & (out["prompt_valid_flat"] > 0)
+    class2 = (out["class_ids"] == 2) & (out["prompt_valid_flat"] > 0)
+    assert out["mask_prompt"].shape[0] == 3
+    assert int(class1.sum()) == 2
+    assert int(class2.sum()) == 1
+    assert out["prompt_component_count"][0, 1] == 2
+    assert out["prompt_component_count"][0, 2] == 1
+
+
 def test_real_sam_wrapper_merges_same_class_multi_prompt_outputs():
     wrapper = RealSAMWrapper.__new__(RealSAMWrapper)
     nn.Module.__init__(wrapper)

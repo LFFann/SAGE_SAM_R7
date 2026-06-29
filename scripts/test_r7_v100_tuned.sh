@@ -8,7 +8,7 @@ cd "${REPO_ROOT}"
 export PYTHONUNBUFFERED=1
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/SAGE_SAM_R7_3Class_V100_Tuned_MultiPrompt_TrustLR}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/SAGE_SAM_R7_3Class_V100_Tuned_TrustLR_ClassPrompt}"
 CONFIG="${CONFIG:-${OUTPUT_DIR}/resolved_config.yaml}"
 CHECKPOINT="${CHECKPOINT:-${OUTPUT_DIR}/checkpoints/best_val_dice.pth}"
 if [[ ! -f "${CHECKPOINT}" && -f "${OUTPUT_DIR}/checkpoints/latest.pth" ]]; then

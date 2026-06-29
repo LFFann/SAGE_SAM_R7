@@ -19,7 +19,7 @@ class PromptGenerator(nn.Module):
         max_box_area_ratio: float = 0.12,
         fallback_box_half_size: float = 0.035,
         valid_min_peak: float = 0.20,
-        max_components_per_class: int = 2,
+        max_components_per_class=2,
     ):
         super().__init__()
         self.num_classes = int(num_classes)
@@ -31,7 +31,8 @@ class PromptGenerator(nn.Module):
         self.max_box_area_ratio = float(max_box_area_ratio)
         self.fallback_box_half_size = float(fallback_box_half_size)
         self.valid_min_peak = float(valid_min_peak)
-        self.max_components_per_class = max(1, int(max_components_per_class))
+        self.max_components_by_class = self._normalize_max_components(max_components_per_class)
+        self.max_components_per_class = max(self.max_components_by_class[1:]) if self.num_foreground > 0 else 1
         refiner_in = 1 + 2 * self.num_foreground + 1
         hidden = max(16, min(64, refiner_in * 8))
         self.refiner = nn.Sequential(
@@ -186,12 +187,14 @@ class PromptGenerator(nn.Module):
                     nx = ny = torch.tensor(0.0, device=masks.device)
 
                 components = []
+                class_id = ci + 1
+                class_max_components = self._max_components_for_class(class_id)
                 if pixel_count >= self.min_component_area and float(peak.detach()) >= self.valid_min_peak:
-                    components = self._connected_components(m, score)
+                    components = self._connected_components(m, score, class_max_components)
                 valid_components = 0
                 class_area = score.new_tensor(0.0)
                 class_box_area = score.new_tensor(0.0)
-                for ki in range(self.max_components_per_class):
+                for ki in range(class_max_components):
                     if ki < len(components):
                         comp = components[ki]
                         yy = comp["yy"].to(device=masks.device)
@@ -243,7 +246,7 @@ class PromptGenerator(nn.Module):
                     flat_area.append(area_ratio)
                     flat_box_area.append(box_area.to(device=masks.device, dtype=masks.dtype))
                     image_index.append(torch.tensor(bi, device=masks.device, dtype=torch.long))
-                    class_ids.append(torch.tensor(ci + 1, device=masks.device, dtype=torch.long))
+                    class_ids.append(torch.tensor(class_id, device=masks.device, dtype=torch.long))
                     component_index.append(torch.tensor(ki, device=masks.device, dtype=torch.long))
 
                 valid_per_image.append(score.new_tensor(1.0 if valid_components > 0 else 0.0))
@@ -277,7 +280,31 @@ class PromptGenerator(nn.Module):
             torch.stack(component_count_rows, dim=0),
         )
 
-    def _connected_components(self, mask: torch.Tensor, score: torch.Tensor) -> list[dict[str, torch.Tensor | float]]:
+    def _normalize_max_components(self, value) -> list[int]:
+        if isinstance(value, dict):
+            out = [0 for _ in range(self.num_classes)]
+            default = int(value.get("default", value.get("*", 1)))
+            for cls in range(1, self.num_classes):
+                out[cls] = max(1, int(value.get(cls, value.get(str(cls), default))))
+            return out
+        if isinstance(value, (list, tuple)):
+            raw = [int(v) for v in value]
+            if len(raw) == self.num_classes:
+                return [0 if cls == 0 else max(1, raw[cls]) for cls in range(self.num_classes)]
+            if len(raw) == self.num_foreground:
+                return [0] + [max(1, v) for v in raw]
+            raise ValueError(
+                "max_components_per_class list must have length num_classes or num_classes - 1"
+            )
+        count = max(1, int(value))
+        return [0] + [count for _ in range(self.num_foreground)]
+
+    def _max_components_for_class(self, class_id: int) -> int:
+        if class_id <= 0 or class_id >= len(self.max_components_by_class):
+            return 1
+        return max(1, int(self.max_components_by_class[class_id]))
+
+    def _connected_components(self, mask: torch.Tensor, score: torch.Tensor, max_components: int) -> list[dict[str, torch.Tensor | float]]:
         mask_cpu = mask.detach().to(device="cpu", dtype=torch.bool)
         if not bool(mask_cpu.any()):
             return []
@@ -320,4 +347,4 @@ class PromptGenerator(nn.Module):
                     }
                 )
         components.sort(key=lambda item: (float(item["score"]), float(item["area"])), reverse=True)
-        return components[: self.max_components_per_class]
+        return components[: max(1, int(max_components))]

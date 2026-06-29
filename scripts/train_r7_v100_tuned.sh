@@ -10,7 +10,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:128}"
 
 CONFIG="${CONFIG:-configs/r7_3class_v100_tuned.yaml}"
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/SAGE_SAM_R7_3Class_V100_Tuned_MultiPrompt_TrustLR}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/SAGE_SAM_R7_3Class_V100_Tuned_TrustLR_ClassPrompt}"
 MAX_ITERATIONS="${MAX_ITERATIONS:-}"
 RESUME="${RESUME:-}"
 
