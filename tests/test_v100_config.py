@@ -38,7 +38,7 @@ def test_v100_tuned_config_matches_server_defaults():
 def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     cfg = load_yaml(ROOT / "configs/r7_3class_v100_tuned.yaml")
 
-    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_SAMDisagree"
+    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_SAMAgreeKD"
     assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
     assert cfg["train"]["lr_schedule"] == "cosine"
     assert cfg["train"]["lr_decay_start_iteration"] <= 750
@@ -97,6 +97,10 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert 0.0 < cfg["sam"]["losses"]["sam_kd_min_effective_weight"] <= 0.00025
     assert cfg["sam"]["losses"]["sam_kd_min_effective_after"] >= 1500
     assert cfg["sam"]["losses"]["sam_kd_min_effective_gate_ratio"] >= 0.004
+    assert 0.0 < cfg["sam"]["losses"]["sam_agreement_weight"] <= 0.04
+    assert cfg["sam"]["losses"]["sam_agreement_min_support"] <= 0.06
+    assert cfg["sam"]["losses"]["sam_agreement_min_verifier"] >= 0.45
+    assert cfg["sam"]["losses"]["sam_agreement_min_effective_weight"] >= 0.001
     assert cfg["trust"]["max_candidate_foreground_ratio"] <= 0.25
     assert cfg["trust"]["min_candidate_foreground_ratio"] <= 0.025
     assert cfg["trust"]["prior_calibrated_min_foreground"] is True
@@ -143,7 +147,7 @@ def test_r7_launch_scripts_are_parameterized():
     test_script = (ROOT / "scripts/test_r7_v100_tuned.sh").read_text(encoding="utf-8")
 
     assert "configs/r7_3class_v100_tuned.yaml" in train_script
-    assert "SAGE_SAM_R7_3Class_V100_Tuned_SAMDisagree" in train_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned_SAMAgreeKD" in train_script
     assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
     assert "validate_r7.py" in test_script
     assert "test_r7.py" in test_script

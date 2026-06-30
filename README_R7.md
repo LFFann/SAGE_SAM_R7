@@ -47,6 +47,10 @@ changes the semi-supervised loop:
     with weak SAM support and low verifier evidence are removed before the
     foreground budget stage, while high-confidence teacher regions and the
     class-prior foreground floor are preserved.
+12. R7.9 adds student-anchored SAM agreement distillation. Reliable SAM regions
+    can supervise the student even when the EMA teacher is empty or lagging, but
+    only if SAM support is high and the student either agrees with SAM's
+    foreground class or is still uncertain.
 
 V100 training:
 
@@ -57,7 +61,7 @@ bash scripts/train_r7_v100_tuned.sh
 Resume or shorten:
 
 ```bash
-MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMDisagree/checkpoints/latest.pth \
+MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMAgreeKD/checkpoints/latest.pth \
   bash scripts/train_r7_v100_tuned.sh
 ```
 
@@ -90,6 +94,9 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `sam_guided_weight_mean`
 - `sam_disagreement_suppressed_ratio`
 - `sam_disagreement_weight_mean`
+- `loss_sam_agreement`
+- `sam_agreement_gate_ratio`
+- `sam_agreement_effective_weight`
 - `loss_sam_extent`
 - `lr_scale`
 - `loss_sam_kd`

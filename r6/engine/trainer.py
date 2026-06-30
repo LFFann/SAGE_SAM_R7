@@ -35,7 +35,12 @@ from r6.engine.evaluator import evaluate
 from r6.engine.logger import OneLineProgress, append_jsonl, setup_logger
 from r6.engine.model_factory import build_deploy_model
 from r6.losses.boundary_losses import boundary_bce_loss
-from r6.losses.foreground_safe_kd import foreground_safe_sam_consistency_loss, foreground_safe_sam_kd_loss, sam_guided_extent_kd_loss
+from r6.losses.foreground_safe_kd import (
+    foreground_safe_sam_consistency_loss,
+    foreground_safe_sam_kd_loss,
+    sam_guided_extent_kd_loss,
+    student_anchored_sam_agreement_loss,
+)
 from r6.losses.sam_adapter_losses import sam_ce_dice_loss
 from r6.losses.tri_state_pseudo_loss import tri_state_pseudo_supervision_loss
 from r6.losses.supervised import supervised_loss
@@ -557,6 +562,7 @@ class SAGESAMR6Trainer:
                 metrics = self.validate(iteration)
                 last_val_metrics = {
                     "val_dice": metrics.get("avg_dice"),
+                    "best_dice": metrics.get("best_dice", self.best_metrics.get("avg_dice")),
                     "val_iou": metrics.get("avg_iou"),
                     "val_hd95": metrics.get("avg_hd95"),
                 }
@@ -903,6 +909,7 @@ class SAGESAMR6Trainer:
             loss_sam_unsup = x_l.new_tensor(0.0)
             loss_kd = x_l.new_tensor(0.0)
             loss_sam_extent = x_l.new_tensor(0.0)
+            loss_sam_agreement = x_l.new_tensor(0.0)
             loss_relation = x_l.new_tensor(0.0)
             loss_boundary = x_l.new_tensor(0.0)
             loss_corr = x_l.new_tensor(0.0)
@@ -910,6 +917,10 @@ class SAGESAMR6Trainer:
             loss_conflict = x_l.new_tensor(0.0)
             sam_kd_gate_ratio = 0.0
             sam_kd_gate_weight_mean = 0.0
+            sam_agreement_gate_ratio = 0.0
+            sam_agreement_weight_mean = 0.0
+            sam_agreement_effective_weight = 0.0
+            sam_agreement_floor_active = False
             masked_locality_stats = {"masked_locality_ratio": 0.0, "foreground_masked_ratio": 0.0}
             if self.use_sam and self.mentor is not None:
                 sam_l = self.mentor.forward_labeled(x_l, y_l)
@@ -1010,6 +1021,24 @@ class SAGESAMR6Trainer:
                         temperature=float(self.config.get("sam", {}).get("extent_kd_temperature", self.config.get("sam", {}).get("kd_temperature", 1.0))),
                         sam_mix=float(sam_loss_cfg.get("sam_extent_target_mix", 0.65)),
                     )
+                if float(sam_loss_cfg.get("sam_agreement_weight", 0.0)) > 0.0:
+                    loss_sam_agreement, sam_agreement_stats = student_anchored_sam_agreement_loss(
+                        out_s1["logits"],
+                        sam_u["sam_prob"],
+                        targets["sam_support"],
+                        targets["sam_verifier_score"],
+                        min_support=float(sam_loss_cfg.get("sam_agreement_min_support", 0.06)),
+                        min_verifier=float(sam_loss_cfg.get("sam_agreement_min_verifier", 0.45)),
+                        uncertain_max_confidence=float(sam_loss_cfg.get("sam_agreement_uncertain_max_confidence", 0.72)),
+                        temperature=float(
+                            self.config.get("sam", {}).get(
+                                "agreement_kd_temperature",
+                                self.config.get("sam", {}).get("kd_temperature", 1.0),
+                            )
+                        ),
+                    )
+                    sam_agreement_gate_ratio = float(sam_agreement_stats["sam_agreement_gate_ratio"])
+                    sam_agreement_weight_mean = float(sam_agreement_stats["sam_agreement_weight_mean"])
                 if structure_cfg.get("use_online_relation", False):
                     relation_gate = targets["structure_gate"].to(device=foreground_mask.device).bool() & foreground_mask
                     loss_relation = online_sam_student_relation_loss(
@@ -1051,6 +1080,25 @@ class SAGESAMR6Trainer:
             ):
                 sam_kd_effective_weight = max(sam_kd_effective_weight, sam_kd_floor)
                 sam_kd_floor_active = sam_kd_effective_weight > sam_kd_raw_effective_weight
+            sam_agreement_loss_weight = float(sam_loss_cfg.get("sam_agreement_weight", 0.0))
+            sam_agreement_raw_effective_weight = float(unsup_scale * sam_ssl_scale * sam_agreement_loss_weight)
+            sam_agreement_effective_weight = sam_agreement_raw_effective_weight
+            sam_agreement_floor = float(sam_loss_cfg.get("sam_agreement_min_effective_weight", 0.0))
+            sam_agreement_floor_after = int(
+                sam_loss_cfg.get(
+                    "sam_agreement_min_effective_after",
+                    self.config.get("r6", {}).get("foreground_grounding_start", 0),
+                )
+            )
+            sam_agreement_floor_gate_ratio = float(sam_loss_cfg.get("sam_agreement_min_effective_gate_ratio", 0.0))
+            if (
+                sam_agreement_floor > 0.0
+                and iteration >= sam_agreement_floor_after
+                and sam_u.get("valid")
+                and sam_agreement_gate_ratio >= sam_agreement_floor_gate_ratio
+            ):
+                sam_agreement_effective_weight = max(sam_agreement_effective_weight, sam_agreement_floor)
+                sam_agreement_floor_active = sam_agreement_effective_weight > sam_agreement_raw_effective_weight
             sam_aux_effective_scale = float(unsup_scale * sam_ssl_scale)
             non_sam_unsup_loss = (
                 loss_unsup
@@ -1070,6 +1118,7 @@ class SAGESAMR6Trainer:
                 + unsup_scale * non_sam_unsup_loss
                 + sam_aux_effective_scale * sam_aux_loss
                 + sam_kd_effective_weight * loss_kd
+                + sam_agreement_effective_weight * loss_sam_agreement
             )
 
         sam_grad_norm = 0.0
@@ -1117,6 +1166,7 @@ class SAGESAMR6Trainer:
             "loss_sam_unsup": float(loss_sam_unsup.detach()),
             "loss_sam_kd": float(loss_kd.detach()),
             "loss_sam_extent": float(loss_sam_extent.detach()),
+            "loss_sam_agreement": float(loss_sam_agreement.detach()),
             "loss_sam_sem": float(loss_kd.detach()),
             "unsup_weight": ramp,
             "r6_unsup_scale": float(unsup_scale),
@@ -1129,6 +1179,10 @@ class SAGESAMR6Trainer:
             "sam_kd_raw_effective_weight": float(sam_kd_raw_effective_weight),
             "sam_kd_effective_weight": float(sam_kd_effective_weight),
             "sam_kd_floor_active": 1.0 if sam_kd_floor_active else 0.0,
+            "sam_agreement_gate_ratio": float(sam_agreement_gate_ratio),
+            "sam_agreement_weight_mean": float(sam_agreement_weight_mean),
+            "sam_agreement_effective_weight": float(sam_agreement_effective_weight),
+            "sam_agreement_floor_active": 1.0 if sam_agreement_floor_active else 0.0,
             "sam_utility_ema": float(self.sam_utility.utility_ema),
             "sam_utility_disabled": 1.0 if self.sam_utility.disabled else 0.0,
             "fast_slow_agreement": float(teacher_out["agreement"].detach()),
@@ -1296,8 +1350,6 @@ class SAGESAMR6Trainer:
             ignore_index=self.ignore_index,
         )
         metrics = self._add_baseline_gaps(metrics)
-        row = {"iteration": iteration, "phase": "val", **metrics}
-        append_jsonl(self.output_dir / "metrics.jsonl", row)
         ckpt_dir = self.output_dir / "checkpoints"
         latest = save_checkpoint(
             ckpt_dir / "latest.pth",
@@ -1316,8 +1368,10 @@ class SAGESAMR6Trainer:
         )
         append_jsonl(self.output_dir / "diagnostics.jsonl", {"event": "checkpoint_saved", "iteration": iteration, "path": str(latest)})
         previous_best = float(self.best_metrics.get("avg_dice", -1.0))
+        is_best_dice = False
         if metrics["avg_dice"] >= previous_best:
             self.best_metrics["avg_dice"] = metrics["avg_dice"]
+            is_best_dice = True
             self.val_collapse_count = 0
             save_checkpoint(
                 ckpt_dir / "best_val_dice.pth",
@@ -1375,5 +1429,17 @@ class SAGESAMR6Trainer:
                 best_metrics=self.best_metrics,
                 calibration_update_count=self.calibration_update_count,
             )
-        self.logger.info("val iter=%d avg_dice=%.4f avg_iou=%.4f", iteration, metrics["avg_dice"], metrics["avg_iou"])
+        best_dice = float(self.best_metrics.get("avg_dice", metrics["avg_dice"]))
+        metrics["best_dice"] = best_dice
+        metrics["best_avg_dice"] = best_dice
+        metrics["is_best_dice"] = 1.0 if is_best_dice else 0.0
+        row = {"iteration": iteration, "phase": "val", **metrics}
+        append_jsonl(self.output_dir / "metrics.jsonl", row)
+        self.logger.info(
+            "val iter=%d avg_dice=%.4f best_dice=%.4f avg_iou=%.4f",
+            iteration,
+            metrics["avg_dice"],
+            best_dice,
+            metrics["avg_iou"],
+        )
         return metrics

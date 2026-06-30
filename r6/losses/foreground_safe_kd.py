@@ -82,3 +82,68 @@ def sam_guided_extent_kd_loss(
     log_student = F.log_softmax(student_logits / temperature, dim=1)
     kd = F.kl_div(log_student, target, reduction="none").sum(dim=1) * (temperature**2)
     return (kd.clamp_min(0.0) * weight).sum() / weight.sum().clamp_min(1e-6)
+
+
+def student_anchored_sam_agreement_loss(
+    student_logits: torch.Tensor,
+    sam_prob: torch.Tensor,
+    sam_support: torch.Tensor,
+    verifier_score: torch.Tensor,
+    min_support: float = 0.06,
+    min_verifier: float = 0.45,
+    uncertain_max_confidence: float = 0.72,
+    temperature: float = 1.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Use SAM as a local specialist only where student/SAM evidence is compatible.
+
+    The gate does not require teacher foreground agreement.  This lets a strong
+    SAM prompt reinforce the student when the EMA teacher is empty or lagging,
+    while still blocking obvious SAM/student contradictions.
+    """
+
+    stats = {
+        "sam_agreement_gate_ratio": 0.0,
+        "sam_agreement_weight_mean": 0.0,
+    }
+    if student_logits.shape != sam_prob.shape or student_logits.shape != sam_support.shape:
+        raise ValueError(
+            "student_logits, sam_prob, and sam_support must share BCHW shape, "
+            f"got {tuple(student_logits.shape)}, {tuple(sam_prob.shape)}, {tuple(sam_support.shape)}"
+        )
+    if student_logits.shape[1] <= 1:
+        return student_logits.new_tensor(0.0), stats
+
+    device = student_logits.device
+    dtype = student_logits.dtype
+    sam_prob = sam_prob.detach().to(device=device, dtype=dtype)
+    sam_support = sam_support.detach().to(device=device, dtype=dtype)
+    verifier_score = verifier_score.detach().to(device=device, dtype=dtype)
+    if verifier_score.ndim == 4 and verifier_score.shape[1] == 1:
+        verifier_score = verifier_score[:, 0]
+    if verifier_score.ndim != 3:
+        raise ValueError(f"verifier_score must be BHW or B1HW, got {tuple(verifier_score.shape)}")
+
+    student_prob = torch.softmax(student_logits.detach(), dim=1)
+    student_fg_conf, student_rel_label = student_prob[:, 1:].max(dim=1)
+    support_conf, support_rel_label = sam_support[:, 1:].max(dim=1)
+    same_fg_class = student_rel_label == support_rel_label
+    student_uncertain = student_fg_conf <= float(uncertain_max_confidence)
+    gate = (
+        (support_conf >= float(min_support))
+        & (verifier_score >= float(min_verifier))
+        & (same_fg_class | student_uncertain)
+    )
+    weight = (support_conf * verifier_score).clamp(0.0, 1.0) * gate.to(dtype=dtype)
+    stats["sam_agreement_gate_ratio"] = float(gate.float().mean().detach())
+    stats["sam_agreement_weight_mean"] = float(weight.mean().detach())
+    if weight.sum() <= 0:
+        return student_logits.new_tensor(0.0), stats
+
+    support_target = sam_prob * sam_support.clamp_min(0.0)
+    support_target[:, 0] = torch.maximum(sam_prob[:, 0], 1.0 - support_conf).clamp(0.0, 1.0)
+    empty = support_target[:, 1:].sum(dim=1, keepdim=True) <= 1e-6
+    support_target = torch.where(empty, sam_prob, support_target)
+    target = support_target / support_target.sum(dim=1, keepdim=True).clamp_min(1e-6)
+    log_student = F.log_softmax(student_logits / temperature, dim=1)
+    kd = F.kl_div(log_student, target, reduction="none").sum(dim=1) * (temperature**2)
+    return (kd.clamp_min(0.0) * weight).sum() / weight.sum().clamp_min(1e-6), stats
