@@ -326,8 +326,8 @@ class SAGESAMR6Trainer:
         total = counts.sum().clamp_min(1.0)
         priors = (counts / total).tolist()
         multiplier = float(pseudo_cfg.get("foreground_prior_cap_multiplier", 4.0))
-        min_cap = float(pseudo_cfg.get("foreground_prior_min_cap", pseudo_cfg.get("min_fg_pixels_per_class_ratio", 0.0)))
-        max_cap = float(pseudo_cfg.get("foreground_prior_max_cap", 1.0))
+        min_cap_cfg = pseudo_cfg.get("foreground_prior_min_cap", pseudo_cfg.get("min_fg_pixels_per_class_ratio", 0.0))
+        max_cap_cfg = pseudo_cfg.get("foreground_prior_max_cap", 1.0)
         old_caps = pseudo_cfg.get("max_fg_candidate_ratio_per_class", [1.0 for _ in range(self.num_classes)])
         new_caps = []
         for cls in range(self.num_classes):
@@ -335,10 +335,58 @@ class SAGESAMR6Trainer:
             if cls == 0:
                 new_caps.append(float(old))
                 continue
+            min_cap = self._class_trust_value({"foreground_prior_min_cap": min_cap_cfg}, "foreground_prior_min_cap", cls, 0.0)
+            max_cap = self._class_trust_value({"foreground_prior_max_cap": max_cap_cfg}, "foreground_prior_max_cap", cls, 1.0)
             prior_cap = min(max_cap, max(min_cap, float(priors[cls]) * multiplier))
             new_caps.append(min(float(old), prior_cap))
         pseudo_cfg["labeled_class_prior"] = priors
         pseudo_cfg["max_fg_candidate_ratio_per_class"] = new_caps
+        pseudo_prior_event = {}
+        if bool(pseudo_cfg.get("prior_calibrated_foreground_budget", False)):
+            old_min_fg = pseudo_cfg.get("min_fg_pixels_per_class_ratio", [0.0 for _ in range(self.num_classes)])
+            old_collapse_min = pseudo_cfg.get("collapse_min_fg_ratio_per_class", 0.0)
+            old_collapse_force = pseudo_cfg.get("collapse_force_fg_ratio_per_class", old_collapse_min)
+            min_multiplier = float(pseudo_cfg.get("foreground_prior_min_ratio_multiplier", 0.55))
+            min_floor = float(pseudo_cfg.get("foreground_prior_min_ratio_floor", 0.0015))
+            collapse_min_multiplier = float(pseudo_cfg.get("foreground_prior_collapse_min_multiplier", 0.45))
+            collapse_force_multiplier = float(pseudo_cfg.get("foreground_prior_collapse_force_multiplier", 0.70))
+            collapse_floor = float(pseudo_cfg.get("foreground_prior_collapse_floor", 0.0010))
+            new_min_fg = []
+            new_collapse_min = []
+            new_collapse_force = []
+            for cls in range(self.num_classes):
+                if cls == 0:
+                    new_min_fg.append(0.0)
+                    new_collapse_min.append(0.0)
+                    new_collapse_force.append(0.0)
+                    continue
+                old_min_value = self._class_trust_value({"min_fg_pixels_per_class_ratio": old_min_fg}, "min_fg_pixels_per_class_ratio", cls, 0.0)
+                calibrated_min = max(min_floor, float(priors[cls]) * min_multiplier)
+                new_min_fg.append(min(old_min_value, calibrated_min) if old_min_value > 0.0 else calibrated_min)
+
+                old_collapse_min_value = self._class_trust_value({"collapse_min_fg_ratio_per_class": old_collapse_min}, "collapse_min_fg_ratio_per_class", cls, 0.0)
+                calibrated_collapse_min = max(collapse_floor, float(priors[cls]) * collapse_min_multiplier)
+                new_collapse_min.append(
+                    min(old_collapse_min_value, calibrated_collapse_min) if old_collapse_min_value > 0.0 else calibrated_collapse_min
+                )
+
+                old_collapse_force_value = self._class_trust_value({"collapse_force_fg_ratio_per_class": old_collapse_force}, "collapse_force_fg_ratio_per_class", cls, 0.0)
+                calibrated_collapse_force = max(collapse_floor, float(priors[cls]) * collapse_force_multiplier)
+                new_collapse_force.append(
+                    min(old_collapse_force_value, calibrated_collapse_force) if old_collapse_force_value > 0.0 else calibrated_collapse_force
+                )
+            pseudo_cfg["min_fg_pixels_per_class_ratio"] = new_min_fg
+            pseudo_cfg["collapse_min_fg_ratio_per_class"] = new_collapse_min
+            pseudo_cfg["collapse_force_fg_ratio_per_class"] = new_collapse_force
+            pseudo_prior_event = {
+                "pseudo_prior_budget_calibrated": True,
+                "old_min_fg_pixels_per_class_ratio": old_min_fg,
+                "new_min_fg_pixels_per_class_ratio": new_min_fg,
+                "old_collapse_min_fg_ratio_per_class": old_collapse_min,
+                "new_collapse_min_fg_ratio_per_class": new_collapse_min,
+                "old_collapse_force_fg_ratio_per_class": old_collapse_force,
+                "new_collapse_force_fg_ratio_per_class": new_collapse_force,
+            }
         trust_cfg = self.config.setdefault("trust", {})
         trust_prior_event = {}
         if bool(trust_cfg.get("prior_calibrated_min_foreground", False)):
@@ -362,12 +410,41 @@ class SAGESAMR6Trainer:
                 calibrated_class = max(class_floor, float(priors[cls]) * class_multiplier)
                 new_class_min.append(min(float(old_value), calibrated_class) if old_value > 0.0 else calibrated_class)
             trust_cfg["min_class_foreground_ratio"] = new_class_min
+            if bool(trust_cfg.get("prior_calibrated_max_foreground", False)):
+                old_max_candidate = float(trust_cfg.get("max_candidate_foreground_ratio", 1.0))
+                max_candidate_multiplier = float(trust_cfg.get("max_candidate_prior_multiplier", 1.65))
+                max_candidate_floor = float(trust_cfg.get("max_candidate_foreground_floor", calibrated_candidate))
+                max_candidate_ceiling = float(trust_cfg.get("max_candidate_foreground_ceiling", old_max_candidate))
+                calibrated_max_candidate = min(max_candidate_ceiling, max(max_candidate_floor, fg_prior * max_candidate_multiplier))
+                trust_cfg["max_candidate_foreground_ratio"] = calibrated_max_candidate
+
+                old_class_max = trust_cfg.get("max_class_foreground_ratio", [1.0 for _ in range(self.num_classes)])
+                max_class_multiplier = float(trust_cfg.get("max_class_prior_multiplier", 2.0))
+                max_class_floor = float(trust_cfg.get("max_class_foreground_floor", 0.0))
+                new_class_max = []
+                for cls in range(self.num_classes):
+                    old_max_value = self._class_trust_value({"max_class_foreground_ratio": old_class_max}, "max_class_foreground_ratio", cls, 1.0)
+                    if cls == 0:
+                        new_class_max.append(float(old_max_value))
+                        continue
+                    calibrated_class_max = max(max_class_floor, float(priors[cls]) * max_class_multiplier)
+                    new_class_max.append(min(float(old_max_value), calibrated_class_max))
+                trust_cfg["max_class_foreground_ratio"] = new_class_max
+            else:
+                old_max_candidate = trust_cfg.get("max_candidate_foreground_ratio")
+                calibrated_max_candidate = old_max_candidate
+                old_class_max = trust_cfg.get("max_class_foreground_ratio")
+                new_class_max = old_class_max
             trust_prior_event = {
                 "trust_prior_calibrated": True,
                 "old_min_candidate_foreground_ratio": old_min_candidate,
                 "new_min_candidate_foreground_ratio": calibrated_candidate,
                 "old_min_class_foreground_ratio": old_class_min,
                 "new_min_class_foreground_ratio": new_class_min,
+                "old_max_candidate_foreground_ratio": old_max_candidate,
+                "new_max_candidate_foreground_ratio": calibrated_max_candidate,
+                "old_max_class_foreground_ratio": old_class_max,
+                "new_max_class_foreground_ratio": new_class_max,
                 "foreground_prior_sum": fg_prior,
             }
         append_jsonl(
@@ -378,6 +455,7 @@ class SAGESAMR6Trainer:
                 "class_prior": priors,
                 "max_fg_candidate_ratio_per_class": new_caps,
                 "foreground_prior_cap_multiplier": multiplier,
+                **pseudo_prior_event,
                 **trust_prior_event,
             },
         )

@@ -101,30 +101,37 @@ def apply_foreground_budget(
     )
 
     sentinel_enabled = bool(config.get("collapse_sentinel_enabled", True))
-    sentinel_ratio = float(config.get("collapse_min_fg_ratio_per_class", min_ratio_default))
-    sentinel_pixels = max(int(config.get("collapse_min_fg_pixels_per_class", 0)), int(round(total_pixels * sentinel_ratio)))
-    sentinel_pixels = max(0, min(sentinel_pixels, total_pixels))
+    sentinel_pixels_by_class = {}
+    for cls in fg_classes:
+        if not (0 < cls < num_classes):
+            continue
+        sentinel_ratio = _class_value(config, "collapse_min_fg_ratio_per_class", cls, min_ratio_default)
+        sentinel_pixels = max(int(config.get("collapse_min_fg_pixels_per_class", 0)), int(round(total_pixels * sentinel_ratio)))
+        sentinel_pixels_by_class[cls] = max(0, min(sentinel_pixels, total_pixels))
     bg_hard = singleton_mask & (singleton_label == 0)
     bg_ratio_before = float(bg_hard.float().mean().detach())
     fg_count_before = int(fg_participation.sum())
-    fg_target_total = sentinel_pixels * max(1, len([c for c in fg_classes if 0 < c < num_classes]))
-    low_all_fg = bool(fg_classes) and all(per_class_counts.get(cls, 0) < sentinel_pixels for cls in fg_classes if 0 < cls < num_classes)
+    fg_target_total = sum(sentinel_pixels_by_class.values())
+    valid_fg_classes = [cls for cls in fg_classes if 0 < cls < num_classes]
+    low_all_fg = bool(valid_fg_classes) and all(per_class_counts.get(cls, 0) < sentinel_pixels_by_class.get(cls, 0) for cls in valid_fg_classes)
     low_total_fg = fg_count_before < fg_target_total
     bg_takeover = bg_ratio_before > float(config.get("collapse_max_background_hard_ratio", 0.50))
     collapse_active = sentinel_enabled and (low_all_fg or (low_total_fg and bg_takeover))
     collapse_forced = torch.zeros_like(singleton_mask, dtype=torch.bool)
     collapse_fg_budget_violation = 0
 
-    if collapse_active and sentinel_pixels > 0:
-        force_ratio = float(config.get("collapse_force_fg_ratio_per_class", max(min_ratio_default, sentinel_ratio)))
+    if collapse_active and any(v > 0 for v in sentinel_pixels_by_class.values()):
         force_pixels_cfg = int(config.get("collapse_force_fg_pixels_per_class", 0))
-        force_pixels = max(force_pixels_cfg, int(round(total_pixels * force_ratio)), sentinel_pixels)
-        force_pixels = max(0, min(force_pixels, total_pixels))
         teacher_weight = float(config.get("collapse_teacher_fallback_weight", 1.0))
         min_score = float(config.get("collapse_min_candidate_score", 0.0))
         for cls in fg_classes:
             if not (0 < cls < num_classes):
                 continue
+            sentinel_pixels = sentinel_pixels_by_class.get(cls, 0)
+            force_default = max(min_ratio_default, _class_value(config, "collapse_min_fg_ratio_per_class", cls, min_ratio_default))
+            force_ratio = _class_value(config, "collapse_force_fg_ratio_per_class", cls, force_default)
+            force_pixels = max(force_pixels_cfg, int(round(total_pixels * force_ratio)), sentinel_pixels)
+            force_pixels = max(0, min(force_pixels, total_pixels))
             hard_cls = singleton_mask & (singleton_label == cls)
             soft_cls = ambiguous_mask & candidate_set[:, cls]
             current = int((hard_cls | soft_cls).sum())

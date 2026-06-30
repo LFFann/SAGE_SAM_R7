@@ -41,6 +41,44 @@ def test_labeled_foreground_prior_tightens_candidate_caps(tmp_path):
     assert caps[2] < 0.08
 
 
+def test_labeled_foreground_prior_calibrates_pseudo_budget_by_class(tmp_path):
+    mask = torch.zeros(10, 10, dtype=torch.long)
+    mask[0, :2] = 1
+    mask[1, 0] = 2
+    trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
+    trainer.num_classes = 3
+    trainer.ignore_index = 255
+    trainer.output_dir = tmp_path
+    trainer.config = {
+        "pseudo": {
+            "use_labeled_foreground_prior": True,
+            "prior_calibrated_foreground_budget": True,
+            "foreground_prior_cap_multiplier": 1.5,
+            "foreground_prior_min_cap": [0.0, 0.005, 0.003],
+            "foreground_prior_max_cap": [0.0, 0.05, 0.04],
+            "foreground_prior_min_ratio_multiplier": 0.5,
+            "foreground_prior_collapse_min_multiplier": 0.4,
+            "foreground_prior_collapse_force_multiplier": 0.7,
+            "min_fg_pixels_per_class_ratio": [0.0, 0.02, 0.02],
+            "collapse_min_fg_ratio_per_class": 0.02,
+            "collapse_force_fg_ratio_per_class": 0.02,
+            "max_fg_candidate_ratio_per_class": [0.0, 0.12, 0.08],
+        }
+    }
+
+    trainer._configure_labeled_foreground_prior(_FakeLabeledDataset([mask]))
+
+    pseudo = trainer.config["pseudo"]
+    assert pseudo["max_fg_candidate_ratio_per_class"][1] == 0.03
+    assert pseudo["max_fg_candidate_ratio_per_class"][2] == 0.015
+    assert pseudo["min_fg_pixels_per_class_ratio"][1] == 0.01
+    assert pseudo["min_fg_pixels_per_class_ratio"][2] == 0.005
+    assert pseudo["collapse_min_fg_ratio_per_class"][1] == 0.008
+    assert pseudo["collapse_min_fg_ratio_per_class"][2] == 0.004
+    assert abs(pseudo["collapse_force_fg_ratio_per_class"][1] - 0.014) < 1e-8
+    assert abs(pseudo["collapse_force_fg_ratio_per_class"][2] - 0.007) < 1e-8
+
+
 def test_dynamic_trust_catches_pre_ceiling_flood_and_sam_overgate():
     trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
     trainer.num_classes = 3

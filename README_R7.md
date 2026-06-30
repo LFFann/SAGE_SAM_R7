@@ -34,6 +34,10 @@ changes the semi-supervised loop:
 8. R7.5 adds class-specific prompt cardinality. Red class-1 structures may use
    one or two connected-component prompts, while blue class-2 structures use one
    fixed connected-component prompt.
+9. R7.6 adds prior-calibrated pseudo-target budgeting. Foreground candidate
+   caps, minimum participation, and collapse recovery ratios are calibrated from
+   the labeled class prior so rare foreground classes are not systematically
+   over-expanded by a shared fixed floor.
 
 V100 training:
 
@@ -44,7 +48,7 @@ bash scripts/train_r7_v100_tuned.sh
 Resume or shorten:
 
 ```bash
-MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_TrustLR_ClassPrompt/checkpoints/latest.pth \
+MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorBudget_ClassPrompt/checkpoints/latest.pth \
   bash scripts/train_r7_v100_tuned.sh
 ```
 

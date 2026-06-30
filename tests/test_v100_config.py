@@ -38,7 +38,7 @@ def test_v100_tuned_config_matches_server_defaults():
 def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     cfg = load_yaml(ROOT / "configs/r7_3class_v100_tuned.yaml")
 
-    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_TrustLR_ClassPrompt"
+    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_PriorBudget_ClassPrompt"
     assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
     assert cfg["train"]["lr_schedule"] == "cosine"
     assert cfg["train"]["lr_decay_start_iteration"] <= 750
@@ -56,15 +56,20 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert 0.0 < cfg["pseudo"]["prior_alignment_strength"] <= 0.5
     assert cfg["pseudo"]["bounded_empty_foreground_fallback"] is True
     assert cfg["pseudo"]["bounded_empty_candidate_recovery"] is True
-    assert cfg["pseudo"]["foreground_prior_cap_multiplier"] <= 1.6
-    assert cfg["pseudo"]["foreground_prior_min_cap"] <= 0.006
+    assert cfg["pseudo"]["prior_calibrated_foreground_budget"] is True
+    assert cfg["pseudo"]["foreground_prior_cap_multiplier"] <= 1.35
+    assert cfg["pseudo"]["foreground_prior_min_cap"][2] <= 0.0035
+    assert cfg["pseudo"]["foreground_prior_min_ratio_multiplier"] <= 0.55
+    assert cfg["pseudo"]["foreground_prior_collapse_force_multiplier"] <= 0.70
     assert cfg["pseudo"]["empty_foreground_fallback_cap_scale"] <= 0.75
     assert cfg["pseudo"]["empty_candidate_recovery_cap_scale"] <= 0.75
-    assert cfg["pseudo"]["max_foreground_candidate_ratio"] <= 0.05
+    assert cfg["pseudo"]["max_foreground_candidate_ratio"] <= 0.035
     assert cfg["pseudo"]["max_safe_negative_ratio_per_class"] <= 0.25
-    assert cfg["pseudo"]["max_fg_candidate_ratio_per_class"][1] <= 0.06
-    assert cfg["pseudo"]["min_fg_pixels_per_class_ratio"][1] <= 0.006
-    assert cfg["pseudo"]["min_fg_pixels_per_class_ratio"][2] >= 0.008
+    assert cfg["pseudo"]["max_fg_candidate_ratio_per_class"][1] <= 0.04
+    assert cfg["pseudo"]["min_fg_pixels_per_class_ratio"][1] <= 0.004
+    assert cfg["pseudo"]["min_fg_pixels_per_class_ratio"][2] <= 0.003
+    assert cfg["pseudo"]["collapse_min_fg_ratio_per_class"][2] <= 0.0022
+    assert cfg["pseudo"]["collapse_force_fg_ratio_per_class"][2] <= 0.0032
     assert cfg["pseudo"]["max_background_from_ceiling_ratio"] <= 0.10
     assert cfg["pseudo"]["background_candidate_min_confidence"] >= 0.65
     assert cfg["pseudo"]["sam_structure_mask_min_support"] >= 0.08
@@ -85,6 +90,7 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["trust"]["max_candidate_foreground_ratio"] <= 0.25
     assert cfg["trust"]["min_candidate_foreground_ratio"] <= 0.025
     assert cfg["trust"]["prior_calibrated_min_foreground"] is True
+    assert cfg["trust"]["prior_calibrated_max_foreground"] is True
     assert cfg["trust"]["min_candidate_prior_multiplier"] <= 0.85
     assert cfg["trust"]["min_candidate_foreground_floor"] <= 0.006
     assert cfg["trust"]["min_class_prior_multiplier"] <= 0.55
@@ -99,7 +105,7 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["trust"]["enabled"] is True
     assert cfg["trust"]["disable_correlation_when_unsafe"] is True
     assert 1200 <= cfg["r6"]["foreground_grounding_start"] <= 1600
-    assert cfg["r6"]["stage1_unsup_max_scale"] <= 0.15
+    assert cfg["r6"]["stage1_unsup_max_scale"] <= 0.10
     assert cfg["eval"]["baseline"]["avg_dice"] > 0.760
     assert cfg["diagnostics"]["train_visualize_every"] == 250
 
@@ -126,7 +132,7 @@ def test_r7_launch_scripts_are_parameterized():
     test_script = (ROOT / "scripts/test_r7_v100_tuned.sh").read_text(encoding="utf-8")
 
     assert "configs/r7_3class_v100_tuned.yaml" in train_script
-    assert "SAGE_SAM_R7_3Class_V100_Tuned_TrustLR_ClassPrompt" in train_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned_PriorBudget_ClassPrompt" in train_script
     assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
     assert "validate_r7.py" in test_script
     assert "test_r7.py" in test_script
