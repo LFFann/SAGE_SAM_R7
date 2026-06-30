@@ -1,6 +1,6 @@
 experiment:
-  name: SAGE_SAM_R7_3Class_V100_Tuned_SAMDominant
-  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMDominant
+  name: SAGE_SAM_R7_3Class_V100_Tuned_SAMDisagree
+  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMDisagree
   seed: 2026
   deterministic: false
 
@@ -106,8 +106,8 @@ sam:
   losses:
     sam_sup_weight: 0.28
     sam_unsup_weight: 0.00
-    sam_student_kd_weight: 0.020
-    sam_extent_weight: 0.08
+    sam_student_kd_weight: 0.015
+    sam_extent_weight: 0.00
     sam_extent_target_mix: 0.70
     sam_kd_min_effective_weight: 0.00025
     sam_kd_min_effective_after: 1500
@@ -123,7 +123,7 @@ r6:
   min_fast_slow_agreement: 0.12
   low_agreement_unsup_scale: 0.15
   stage1_unsup_max_scale: 0.10
-  stage1_sam_max_scale: 0.08
+  stage1_sam_max_scale: 0.06
   self_reliance_ssl_scale: 0.35
 
 trust:
@@ -238,7 +238,7 @@ pseudo:
   sam_kd_min_support: 0.08
   sam_kd_min_teacher_confidence: 0.03
   sam_kd_min_verifier_score: 0.30
-  sam_guided_pseudo_enabled: true
+  sam_guided_pseudo_enabled: false
   sam_guided_support_min: 0.08
   sam_guided_teacher_min: 0.03
   sam_guided_verifier_min: 0.30
@@ -248,6 +248,14 @@ pseudo:
   sam_guided_singleton_teacher_min: 0.08
   sam_guided_singleton_cap_scale: 0.30
   sam_guided_soft_weight: 0.65
+  sam_disagreement_suppression_enabled: true
+  sam_disagreement_support_max: 0.04
+  sam_disagreement_verifier_max: 0.52
+  sam_disagreement_teacher_max: 0.42
+  sam_disagreement_candidate_cap_scale: 0.75
+  sam_disagreement_score_scale: 0.0
+  sam_disagreement_min_score: 0.01
+  sam_disagreement_background_floor: 0.20
   min_foreground_score: 0.01
   min_fg_pixels_per_class_ratio: [0.0, 0.0040, 0.0030]
   max_background_hard_ratio: 0.35

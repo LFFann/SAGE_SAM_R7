@@ -38,7 +38,7 @@ def test_v100_tuned_config_matches_server_defaults():
 def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     cfg = load_yaml(ROOT / "configs/r7_3class_v100_tuned.yaml")
 
-    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_SAMDominant"
+    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_SAMDisagree"
     assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
     assert cfg["train"]["lr_schedule"] == "cosine"
     assert cfg["train"]["lr_decay_start_iteration"] <= 750
@@ -77,18 +77,22 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["pseudo"]["sam_kd_require_teacher_agreement"] is True
     assert cfg["pseudo"]["sam_kd_allow_boundary_without_support"] is False
     assert cfg["pseudo"]["sam_kd_min_verifier_score"] >= 0.30
-    assert cfg["pseudo"]["sam_guided_pseudo_enabled"] is True
+    assert cfg["pseudo"]["sam_guided_pseudo_enabled"] is False
     assert cfg["pseudo"]["sam_guided_support_min"] >= 0.08
     assert cfg["pseudo"]["sam_guided_candidate_cap_scale"] <= 0.70
     assert cfg["pseudo"]["sam_guided_singleton_cap_scale"] <= 0.30
+    assert cfg["pseudo"]["sam_disagreement_suppression_enabled"] is True
+    assert cfg["pseudo"]["sam_disagreement_support_max"] <= 0.04
+    assert cfg["pseudo"]["sam_disagreement_verifier_max"] <= 0.55
+    assert cfg["pseudo"]["sam_disagreement_teacher_max"] <= 0.42
     assert cfg["sam"]["prompt"]["use_point_prompt"] is False
     assert cfg["sam"]["prompt"]["max_box_area_ratio"] <= 0.12
     assert cfg["sam"]["prompt"]["fallback_box_half_size"] <= 0.035
     assert cfg["sam"]["prompt"]["max_components_per_class"] == [0, 2, 1]
     assert cfg["sam"]["losses"]["sam_sup_weight"] <= 0.30
     assert cfg["sam"]["losses"]["sam_unsup_weight"] == 0.0
-    assert cfg["sam"]["losses"]["sam_student_kd_weight"] <= 0.020
-    assert 0.0 < cfg["sam"]["losses"]["sam_extent_weight"] <= 0.08
+    assert cfg["sam"]["losses"]["sam_student_kd_weight"] <= 0.015
+    assert cfg["sam"]["losses"]["sam_extent_weight"] == 0.0
     assert 0.50 <= cfg["sam"]["losses"]["sam_extent_target_mix"] <= 0.75
     assert 0.0 < cfg["sam"]["losses"]["sam_kd_min_effective_weight"] <= 0.00025
     assert cfg["sam"]["losses"]["sam_kd_min_effective_after"] >= 1500
@@ -112,7 +116,7 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["trust"]["disable_correlation_when_unsafe"] is True
     assert 1200 <= cfg["r6"]["foreground_grounding_start"] <= 1600
     assert cfg["r6"]["stage1_unsup_max_scale"] <= 0.10
-    assert cfg["r6"]["stage1_sam_max_scale"] <= 0.08
+    assert cfg["r6"]["stage1_sam_max_scale"] <= 0.06
     assert cfg["eval"]["baseline"]["avg_dice"] > 0.760
     assert cfg["diagnostics"]["train_visualize_every"] == 250
 
@@ -139,7 +143,7 @@ def test_r7_launch_scripts_are_parameterized():
     test_script = (ROOT / "scripts/test_r7_v100_tuned.sh").read_text(encoding="utf-8")
 
     assert "configs/r7_3class_v100_tuned.yaml" in train_script
-    assert "SAGE_SAM_R7_3Class_V100_Tuned_SAMDominant" in train_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned_SAMDisagree" in train_script
     assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
     assert "validate_r7.py" in test_script
     assert "test_r7.py" in test_script

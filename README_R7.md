@@ -42,6 +42,11 @@ changes the semi-supervised loop:
     verifier-approved foreground pixels into the set-valued target under
     class-prior area budgets, and a gated full-channel extent KD loss lets SAM
     supervise foreground/background shape where its prompt is trusted.
+11. R7.8 changes the default path from SAM-dominant foreground expansion to
+    SAM-disagreement suppression. Low-teacher-confidence foreground candidates
+    with weak SAM support and low verifier evidence are removed before the
+    foreground budget stage, while high-confidence teacher regions and the
+    class-prior foreground floor are preserved.
 
 V100 training:
 
@@ -52,7 +57,7 @@ bash scripts/train_r7_v100_tuned.sh
 Resume or shorten:
 
 ```bash
-MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMDominant/checkpoints/latest.pth \
+MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMDisagree/checkpoints/latest.pth \
   bash scripts/train_r7_v100_tuned.sh
 ```
 
@@ -83,11 +88,13 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `sam_kd_floor_active`
 - `sam_guided_candidate_ratio`
 - `sam_guided_weight_mean`
+- `sam_disagreement_suppressed_ratio`
+- `sam_disagreement_weight_mean`
 - `loss_sam_extent`
 - `lr_scale`
 - `loss_sam_kd`
 
 The default R7 config uses adapter-only SAM PEFT, freezes the prompt encoder,
 freezes the SAM mask decoder, and lets SAM act as a budgeted structural mentor
-only where teacher agreement, prompt validity, SAM support, and verifier score
-are jointly reliable.
+or disagreement filter only where teacher agreement, prompt validity, SAM
+support, and verifier score are jointly informative.

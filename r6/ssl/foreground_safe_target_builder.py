@@ -319,6 +319,98 @@ def _apply_sam_guided_pseudo_refinement(
     return candidate_set, singleton_label, singleton_mask, ambiguous_mask, guided_class_gate, guided_weight, stats
 
 
+def _apply_sam_disagreement_suppression(
+    candidate_set: torch.Tensor,
+    singleton_label: torch.Tensor,
+    singleton_mask: torch.Tensor,
+    ambiguous_mask: torch.Tensor,
+    foreground_score: torch.Tensor,
+    teacher_prob: torch.Tensor,
+    sam_support: torch.Tensor,
+    verifier_score: torch.Tensor,
+    reliable_fg: torch.Tensor,
+    fg_classes: list[int],
+    config: dict,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+    suppressed_class_gate = torch.zeros_like(candidate_set, dtype=torch.bool)
+    suppressed_weight = teacher_prob.new_zeros(candidate_set.shape[0], candidate_set.shape[2], candidate_set.shape[3])
+    if not bool(config.get("sam_disagreement_suppression_enabled", False)):
+        return (
+            candidate_set,
+            singleton_label,
+            singleton_mask,
+            ambiguous_mask,
+            foreground_score,
+            suppressed_class_gate,
+            suppressed_weight,
+            {"sam_disagreement_suppression_active": 0.0},
+        )
+
+    total_pixels = int(singleton_mask.numel())
+    support_max = float(config.get("sam_disagreement_support_max", 0.04))
+    verifier_max = float(config.get("sam_disagreement_verifier_max", 0.50))
+    teacher_max = float(config.get("sam_disagreement_teacher_max", 0.42))
+    score_scale = float(config.get("sam_disagreement_score_scale", 0.0))
+    candidate_cap_scale = float(config.get("sam_disagreement_candidate_cap_scale", 0.70))
+    min_fg_score = float(config.get("sam_disagreement_min_score", 0.0))
+    background_floor = float(config.get("sam_disagreement_background_floor", 0.0))
+    stats: dict[str, float] = {"sam_disagreement_suppression_active": 1.0}
+
+    for cls in fg_classes:
+        if not (0 < cls < candidate_set.shape[1]):
+            continue
+        soft_candidate = candidate_set[:, cls] & ~(singleton_mask & (singleton_label == cls))
+        eligible = (
+            soft_candidate
+            & ~reliable_fg[:, cls]
+            & (sam_support[:, cls] <= support_max)
+            & (verifier_score <= verifier_max)
+            & (teacher_prob[:, cls] <= teacher_max)
+            & (teacher_prob[:, cls] >= min_fg_score)
+            & (teacher_prob[:, 0] >= background_floor)
+        )
+        max_ratio = _class_value(
+            config,
+            "sam_disagreement_max_ratio_per_class",
+            cls,
+            _class_value(config, "max_fg_candidate_ratio_per_class", cls, float(config.get("max_foreground_candidate_ratio", 1.0))),
+        )
+        max_pixels = max(0, min(total_pixels, int(round(total_pixels * max_ratio * candidate_cap_scale))))
+        disagreement_score = (
+            (support_max - sam_support[:, cls]).clamp_min(0.0)
+            + (verifier_max - verifier_score).clamp_min(0.0)
+            + (teacher_max - teacher_prob[:, cls]).clamp_min(0.0)
+            + teacher_prob[:, 0].clamp(0.0, 1.0)
+        )
+        suppress = _topk_mask(disagreement_score, eligible, max_pixels)
+        if int(suppress.sum()) > 0:
+            candidate_set[:, cls] = candidate_set[:, cls] & ~suppress
+            foreground_score[:, cls] = torch.where(
+                suppress,
+                foreground_score[:, cls] * score_scale,
+                foreground_score[:, cls],
+            )
+            suppressed_class_gate[:, cls] = suppress
+            suppressed_weight = torch.maximum(suppressed_weight, torch.where(suppress, disagreement_score.clamp(0.0, 1.0), suppressed_weight.new_zeros(suppressed_weight.shape)))
+
+        stats[f"sam_disagreement_suppressed_ratio_class{cls}"] = float(suppress.float().mean().detach())
+
+    suppressed_mask = suppressed_class_gate[:, 1:].any(dim=1) if suppressed_class_gate.shape[1] > 1 else torch.zeros_like(singleton_mask)
+    ambiguous_mask = ambiguous_mask & (candidate_set.sum(dim=1) > 0) & ~singleton_mask
+    stats["sam_disagreement_suppressed_ratio"] = float(suppressed_mask.float().mean().detach())
+    stats["sam_disagreement_weight_mean"] = float(suppressed_weight.mean().detach())
+    return (
+        candidate_set,
+        singleton_label,
+        singleton_mask,
+        ambiguous_mask,
+        foreground_score,
+        suppressed_class_gate,
+        suppressed_weight,
+        stats,
+    )
+
+
 def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calibrator, config: dict):
     teacher_prob = teacher_out["mean_prob"].detach()
     if teacher_prob.ndim != 4:
@@ -478,10 +570,35 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
             fg_classes=fg_classes,
             config=config,
         )
+        (
+            candidate_set,
+            singleton_label,
+            singleton_mask,
+            ambiguous_mask,
+            foreground_score,
+            sam_disagreement_class_gate,
+            sam_disagreement_weight,
+            sam_disagreement_stats,
+        ) = _apply_sam_disagreement_suppression(
+            candidate_set=candidate_set,
+            singleton_label=singleton_label,
+            singleton_mask=singleton_mask,
+            ambiguous_mask=ambiguous_mask,
+            foreground_score=foreground_score,
+            teacher_prob=teacher_prob,
+            sam_support=sam_support,
+            verifier_score=verifier_score,
+            reliable_fg=reliable_fg,
+            fg_classes=fg_classes,
+            config=config,
+        )
     else:
         sam_guided_class_gate = torch.zeros_like(candidate_set, dtype=torch.bool)
         sam_guided_weight = teacher_prob.new_zeros((bsz, height, width))
         sam_guided_stats = {"sam_guided_active": 0.0}
+        sam_disagreement_class_gate = torch.zeros_like(candidate_set, dtype=torch.bool)
+        sam_disagreement_weight = teacher_prob.new_zeros((bsz, height, width))
+        sam_disagreement_stats = {"sam_disagreement_suppression_active": 0.0}
     has_fg_candidate = candidate_set[:, 1:].any(dim=1) if num_classes > 1 else torch.zeros_like(teacher_label, dtype=torch.bool)
     conflict_mask = (teacher_label == 0) & has_fg_candidate & ~reliable_background
 
@@ -511,6 +628,12 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
     sam_guided_class_gate = sam_guided_class_gate & candidate_set
     sam_guided_mask = sam_guided_class_gate[:, 1:].any(dim=1) if num_classes > 1 else torch.zeros_like(singleton_mask)
     sam_guided_weight = torch.where(sam_guided_mask, sam_guided_weight, sam_guided_weight.new_zeros(sam_guided_weight.shape))
+    sam_disagreement_mask = sam_disagreement_class_gate[:, 1:].any(dim=1) if num_classes > 1 else torch.zeros_like(singleton_mask)
+    sam_disagreement_weight = torch.where(
+        sam_disagreement_mask,
+        sam_disagreement_weight,
+        sam_disagreement_weight.new_zeros(sam_disagreement_weight.shape),
+    )
 
     raw_negative_set = torch.zeros_like(candidate_set, dtype=torch.bool)
     rank_pos = _rank_positions(teacher_prob)
@@ -669,8 +792,11 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         **negative_budget_stats,
         **prior_alignment_stats,
         **sam_guided_stats,
+        **sam_disagreement_stats,
         "sam_guided_candidate_ratio": float(sam_guided_mask.float().mean().detach()),
         "sam_guided_weight_mean": float(sam_guided_weight.mean().detach()),
+        "sam_disagreement_suppressed_ratio": float(sam_disagreement_mask.float().mean().detach()),
+        "sam_disagreement_weight_mean": float(sam_disagreement_weight.mean().detach()),
     }
     for cls in fg_classes:
         stats[f"safe_negative_ratio_class{cls}"] = per_class_safe_negative[cls]
@@ -695,6 +821,9 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         "sam_guided_class_gate": sam_guided_class_gate.detach(),
         "sam_guided_mask": sam_guided_mask.detach(),
         "sam_guided_weight": sam_guided_weight.detach(),
+        "sam_disagreement_class_gate": sam_disagreement_class_gate.detach(),
+        "sam_disagreement_mask": sam_disagreement_mask.detach(),
+        "sam_disagreement_weight": sam_disagreement_weight.detach(),
         "structure_gate": structure_gate.detach(),
         "sam_structure_support_mask": sam_structure_support_mask.detach(),
         "sam_weight": sam_weight.detach(),

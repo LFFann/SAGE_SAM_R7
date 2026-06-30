@@ -404,6 +404,54 @@ def test_r7_sam_guided_pseudo_refinement_promotes_vetted_low_support_mask():
     assert targets["soft_target"][:, 1, 2:4, 2:4].mean() > teacher_prob[:, 1, 2:4, 2:4].mean()
 
 
+def test_r7_sam_disagreement_suppression_removes_unsupported_soft_foreground():
+    cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
+    cal.teacher_q = torch.tensor([0.80, 0.20, 0.80])
+    cal.sam_q = torch.tensor([0.80, 0.80, 0.80])
+    teacher_prob = torch.full((1, 3, 8, 8), 0.04)
+    teacher_prob[:, 0] = 0.66
+    teacher_prob[:, 1] = 0.30
+    sam_prob = torch.full_like(teacher_prob, 0.01)
+    sam_prob[:, 0] = 0.98
+
+    targets = build_set_valued_targets(
+        {"mean_prob": teacher_prob},
+        {
+            "valid": True,
+            "sam_prob": sam_prob,
+            "prompt_quality": torch.zeros(1, 3),
+            "sam_iou": torch.zeros(1, 3),
+        },
+        cal,
+        {
+            "_iteration": 1800,
+            "foreground_classes": [1, 2],
+            "sam_role": "verifier",
+            "min_teacher_confidence": 0.50,
+            "min_sam_confidence": 0.60,
+            "sam_guided_pseudo_enabled": False,
+            "sam_disagreement_suppression_enabled": True,
+            "sam_disagreement_support_max": 0.04,
+            "sam_disagreement_verifier_max": 0.52,
+            "sam_disagreement_teacher_max": 0.42,
+            "sam_disagreement_candidate_cap_scale": 1.0,
+            "sam_disagreement_score_scale": 0.0,
+            "sam_disagreement_background_floor": 0.20,
+            "max_candidate_set_size": 2,
+            "min_fg_pixels_per_class_ratio": 0.0,
+            "collapse_sentinel_enabled": False,
+            "recover_empty_candidates": False,
+            "bounded_foreground_candidates": False,
+            "bounded_safe_negative": False,
+        },
+    )
+
+    assert targets["stats"]["sam_disagreement_suppression_active"] == 1.0
+    assert targets["stats"]["sam_disagreement_suppressed_ratio_class1"] > 0.0
+    assert targets["sam_disagreement_mask"].any()
+    assert targets["candidate_set"][:, 1].sum() == 0
+
+
 def test_r6_collapse_sentinel_blocks_background_takeover_and_forces_fg_candidates():
     cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
     cal.teacher_q = torch.tensor([0.50, 0.50, 0.50])
