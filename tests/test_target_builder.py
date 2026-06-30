@@ -360,6 +360,50 @@ def test_r7_sam_kd_gate_requires_classwise_sam_teacher_agreement():
     assert targets["sam_kd_weight"].sum() == 0
 
 
+def test_r7_sam_guided_pseudo_refinement_promotes_vetted_low_support_mask():
+    cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
+    cal.teacher_q = torch.tensor([0.95, 0.95, 0.95])
+    cal.sam_q = torch.tensor([0.95, 0.95, 0.95])
+    teacher_prob = torch.full((1, 3, 10, 10), 0.02)
+    teacher_prob[:, 0] = 0.94
+    teacher_prob[:, 1, 2:4, 2:4] = 0.04
+    teacher_prob[:, 0, 2:4, 2:4] = 0.92
+    sam_prob = torch.full_like(teacher_prob, 0.01)
+    sam_prob[:, 0] = 0.79
+    sam_prob[:, 1, 2:4, 2:4] = 0.20
+    sam_prob = sam_prob / sam_prob.sum(dim=1, keepdim=True)
+
+    targets = build_set_valued_targets(
+        {"mean_prob": teacher_prob},
+        {"valid": True, "sam_prob": sam_prob, "prompt_quality": torch.ones(1, 3), "sam_iou": torch.ones(1, 3)},
+        cal,
+        {
+            "_iteration": 1800,
+            "foreground_classes": [1, 2],
+            "sam_role": "verifier",
+            "min_sam_confidence": 0.60,
+            "sam_guided_pseudo_enabled": True,
+            "sam_guided_support_min": 0.08,
+            "sam_guided_teacher_min": 0.03,
+            "sam_guided_verifier_min": 0.30,
+            "sam_guided_min_margin": 0.02,
+            "sam_guided_candidate_cap_scale": 1.0,
+            "sam_guided_singleton_support_min": 0.14,
+            "sam_guided_singleton_teacher_min": 0.03,
+            "sam_guided_singleton_cap_scale": 1.0,
+            "max_fg_candidate_ratio_per_class": [0.0, 0.08, 0.04],
+            "disable_bg_if_no_fg": True,
+            "bounded_foreground_candidates": True,
+        },
+    )
+
+    assert targets["stats"]["sam_guided_active"] == 1.0
+    assert targets["stats"]["sam_guided_candidate_ratio_class1"] > 0.0
+    assert targets["sam_guided_mask"].any()
+    assert targets["candidate_set"][:, 1, 2:4, 2:4].any()
+    assert targets["soft_target"][:, 1, 2:4, 2:4].mean() > teacher_prob[:, 1, 2:4, 2:4].mean()
+
+
 def test_r6_collapse_sentinel_blocks_background_takeover_and_forces_fg_candidates():
     cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
     cal.teacher_q = torch.tensor([0.50, 0.50, 0.50])

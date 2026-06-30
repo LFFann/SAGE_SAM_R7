@@ -38,6 +38,10 @@ changes the semi-supervised loop:
    caps, minimum participation, and collapse recovery ratios are calibrated from
    the labeled class prior so rare foreground classes are not systematically
    over-expanded by a shared fixed floor.
+10. R7.7 adds SAM-guided pseudo refinement. SAM now promotes teacher-agreed,
+    verifier-approved foreground pixels into the set-valued target under
+    class-prior area budgets, and a gated full-channel extent KD loss lets SAM
+    supervise foreground/background shape where its prompt is trusted.
 
 V100 training:
 
@@ -48,7 +52,7 @@ bash scripts/train_r7_v100_tuned.sh
 Resume or shorten:
 
 ```bash
-MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorBudget_ClassPrompt/checkpoints/latest.pth \
+MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMDominant/checkpoints/latest.pth \
   bash scripts/train_r7_v100_tuned.sh
 ```
 
@@ -77,9 +81,13 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `sam_kd_raw_effective_weight`
 - `sam_kd_effective_weight`
 - `sam_kd_floor_active`
+- `sam_guided_candidate_ratio`
+- `sam_guided_weight_mean`
+- `loss_sam_extent`
 - `lr_scale`
 - `loss_sam_kd`
 
 The default R7 config uses adapter-only SAM PEFT, freezes the prompt encoder,
-freezes the SAM mask decoder, and keeps SAM primarily as a verifier for the
-student/EMA pseudo-target loop.
+freezes the SAM mask decoder, and lets SAM act as a budgeted structural mentor
+only where teacher agreement, prompt validity, SAM support, and verifier score
+are jointly reliable.

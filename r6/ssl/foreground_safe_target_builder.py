@@ -237,6 +237,88 @@ def _cap_safe_negative_set(
     return bounded, stats
 
 
+def _apply_sam_guided_pseudo_refinement(
+    candidate_set: torch.Tensor,
+    singleton_label: torch.Tensor,
+    singleton_mask: torch.Tensor,
+    ambiguous_mask: torch.Tensor,
+    teacher_prob: torch.Tensor,
+    sam_support: torch.Tensor,
+    verifier_score: torch.Tensor,
+    fg_classes: list[int],
+    config: dict,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+    guided_class_gate = torch.zeros_like(candidate_set, dtype=torch.bool)
+    guided_weight = teacher_prob.new_zeros(candidate_set.shape[0], candidate_set.shape[2], candidate_set.shape[3])
+    if not bool(config.get("sam_guided_pseudo_enabled", False)):
+        return candidate_set, singleton_label, singleton_mask, ambiguous_mask, guided_class_gate, guided_weight, {"sam_guided_active": 0.0}
+
+    total_pixels = int(singleton_mask.numel())
+    support_min = float(config.get("sam_guided_support_min", config.get("sam_structure_mask_min_support", 0.08)))
+    teacher_min = float(config.get("sam_guided_teacher_min", config.get("sam_kd_min_teacher_confidence", 0.03)))
+    verifier_min = float(config.get("sam_guided_verifier_min", config.get("sam_kd_min_verifier_score", 0.30)))
+    margin = float(config.get("sam_guided_min_margin", 0.0))
+    candidate_cap_scale = float(config.get("sam_guided_candidate_cap_scale", 0.65))
+    singleton_support_min = float(config.get("sam_guided_singleton_support_min", max(support_min, 0.14)))
+    singleton_teacher_min = float(config.get("sam_guided_singleton_teacher_min", max(teacher_min, 0.08)))
+    singleton_cap_scale = float(config.get("sam_guided_singleton_cap_scale", 0.35))
+    teacher_label = teacher_prob.argmax(dim=1)
+    fg_support = sam_support[:, 1:] if sam_support.shape[1] > 1 else sam_support[:, :0]
+    stats: dict[str, float] = {"sam_guided_active": 1.0}
+
+    for cls in fg_classes:
+        if not (0 < cls < candidate_set.shape[1]):
+            continue
+        if fg_support.numel() == 0:
+            other_support = torch.zeros_like(sam_support[:, cls])
+        else:
+            rel_cls = cls - 1
+            if 0 <= rel_cls < fg_support.shape[1] and fg_support.shape[1] > 1:
+                others = [idx for idx in range(fg_support.shape[1]) if idx != rel_cls]
+                other_support = fg_support[:, others].max(dim=1).values if others else torch.zeros_like(sam_support[:, cls])
+            else:
+                other_support = torch.zeros_like(sam_support[:, cls])
+        teacher_ok = (teacher_prob[:, cls] >= teacher_min) | (teacher_label == cls)
+        sam_score = (sam_support[:, cls] * verifier_score).clamp(0.0, 1.0)
+        eligible = (
+            (sam_support[:, cls] >= support_min)
+            & ((sam_support[:, cls] - other_support) >= margin)
+            & (verifier_score >= verifier_min)
+            & teacher_ok
+        )
+        max_ratio = _class_value(
+            config,
+            "sam_guided_max_ratio_per_class",
+            cls,
+            _class_value(config, "max_fg_candidate_ratio_per_class", cls, float(config.get("max_foreground_candidate_ratio", 1.0))),
+        )
+        max_pixels = max(0, min(total_pixels, int(round(total_pixels * max_ratio * candidate_cap_scale))))
+        keep = _topk_mask(sam_score + 0.25 * teacher_prob[:, cls], eligible, max_pixels)
+        if int(keep.sum()) > 0:
+            candidate_set[:, 0] = candidate_set[:, 0] & ~keep
+            candidate_set[:, cls] = candidate_set[:, cls] | keep
+            guided_class_gate[:, cls] = keep
+            guided_weight = torch.maximum(guided_weight, torch.where(keep, sam_score.clamp_min(float(config.get("sam_region_min_weight", 0.05))), guided_weight.new_zeros(guided_weight.shape)))
+
+        singleton_eligible = keep & (sam_support[:, cls] >= singleton_support_min) & (teacher_prob[:, cls] >= singleton_teacher_min)
+        singleton_pixels = max(0, min(total_pixels, int(round(total_pixels * max_ratio * singleton_cap_scale))))
+        singleton_keep = _topk_mask(sam_score + 0.50 * teacher_prob[:, cls], singleton_eligible, singleton_pixels)
+        if int(singleton_keep.sum()) > 0:
+            singleton_label = torch.where(singleton_keep, torch.full_like(singleton_label, cls), singleton_label)
+            singleton_mask = singleton_mask | singleton_keep
+            ambiguous_mask = ambiguous_mask & ~singleton_keep
+
+        stats[f"sam_guided_candidate_ratio_class{cls}"] = float(keep.float().mean().detach())
+        stats[f"sam_guided_singleton_ratio_class{cls}"] = float(singleton_keep.float().mean().detach())
+
+    guided_mask = guided_class_gate[:, 1:].any(dim=1) if guided_class_gate.shape[1] > 1 else torch.zeros_like(guided_weight, dtype=torch.bool)
+    ambiguous_mask = (ambiguous_mask | (guided_mask & ~singleton_mask)) & (candidate_set.sum(dim=1) > 0) & ~singleton_mask
+    stats["sam_guided_candidate_ratio"] = float(guided_mask.float().mean().detach())
+    stats["sam_guided_singleton_ratio"] = float((singleton_mask & guided_mask).float().mean().detach())
+    stats["sam_guided_weight_mean"] = float(guided_weight.mean().detach())
+    return candidate_set, singleton_label, singleton_mask, ambiguous_mask, guided_class_gate, guided_weight, stats
+
+
 def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calibrator, config: dict):
     teacher_prob = teacher_out["mean_prob"].detach()
     if teacher_prob.ndim != 4:
@@ -376,6 +458,32 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
     ambiguous_mask = ((candidate_count > 1) | (~singleton_mask & has_fg_candidate) | teacher_low) & (candidate_count > 0)
     ambiguous_mask = ambiguous_mask & ~reliable_fg_any
     conflict_mask = (teacher_label == 0) & has_fg_candidate & ~reliable_background
+    if sam_valid:
+        (
+            candidate_set,
+            singleton_label,
+            singleton_mask,
+            ambiguous_mask,
+            sam_guided_class_gate,
+            sam_guided_weight,
+            sam_guided_stats,
+        ) = _apply_sam_guided_pseudo_refinement(
+            candidate_set=candidate_set,
+            singleton_label=singleton_label,
+            singleton_mask=singleton_mask,
+            ambiguous_mask=ambiguous_mask,
+            teacher_prob=teacher_prob,
+            sam_support=sam_support,
+            verifier_score=verifier_score,
+            fg_classes=fg_classes,
+            config=config,
+        )
+    else:
+        sam_guided_class_gate = torch.zeros_like(candidate_set, dtype=torch.bool)
+        sam_guided_weight = teacher_prob.new_zeros((bsz, height, width))
+        sam_guided_stats = {"sam_guided_active": 0.0}
+    has_fg_candidate = candidate_set[:, 1:].any(dim=1) if num_classes > 1 else torch.zeros_like(teacher_label, dtype=torch.bool)
+    conflict_mask = (teacher_label == 0) & has_fg_candidate & ~reliable_background
 
     singleton_label, singleton_mask, candidate_set, ambiguous_mask, budget_stats = apply_foreground_budget(
         singleton_label=singleton_label,
@@ -400,6 +508,9 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
     has_fg_candidate = candidate_set[:, 1:].any(dim=1) if num_classes > 1 else torch.zeros_like(teacher_label, dtype=torch.bool)
     ambiguous_mask = ambiguous_mask & (candidate_set.sum(dim=1) > 0)
     conflict_mask = (teacher_label == 0) & has_fg_candidate & ~reliable_background
+    sam_guided_class_gate = sam_guided_class_gate & candidate_set
+    sam_guided_mask = sam_guided_class_gate[:, 1:].any(dim=1) if num_classes > 1 else torch.zeros_like(singleton_mask)
+    sam_guided_weight = torch.where(sam_guided_mask, sam_guided_weight, sam_guided_weight.new_zeros(sam_guided_weight.shape))
 
     raw_negative_set = torch.zeros_like(candidate_set, dtype=torch.bool)
     rank_pos = _rank_positions(teacher_prob)
@@ -431,6 +542,12 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
 
     soft_score = teacher_prob.clone()
     soft_score[:, 1:] = torch.maximum(soft_score[:, 1:], sam_support[:, 1:] * float(config.get("sam_fuzzy_support_weight", 0.25)))
+    if bool(config.get("sam_guided_pseudo_enabled", False)) and num_classes > 1:
+        guided_soft_weight = float(config.get("sam_guided_soft_weight", 0.65))
+        soft_score[:, 1:] = torch.maximum(
+            soft_score[:, 1:],
+            sam_support[:, 1:] * guided_soft_weight * sam_guided_class_gate[:, 1:].float(),
+        )
     soft_score = soft_score * candidate_set.float()
     soft_empty = soft_score.sum(dim=1, keepdim=True) <= 1e-6
     soft_score = torch.where(soft_empty, teacher_prob, soft_score)
@@ -551,6 +668,9 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         **ceiling_stats,
         **negative_budget_stats,
         **prior_alignment_stats,
+        **sam_guided_stats,
+        "sam_guided_candidate_ratio": float(sam_guided_mask.float().mean().detach()),
+        "sam_guided_weight_mean": float(sam_guided_weight.mean().detach()),
     }
     for cls in fg_classes:
         stats[f"safe_negative_ratio_class{cls}"] = per_class_safe_negative[cls]
@@ -572,6 +692,9 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         "sam_region_gate": sam_region_gate.detach(),
         "sam_kd_gate": sam_kd_gate.detach(),
         "sam_kd_class_gate": sam_kd_class_gate.detach(),
+        "sam_guided_class_gate": sam_guided_class_gate.detach(),
+        "sam_guided_mask": sam_guided_mask.detach(),
+        "sam_guided_weight": sam_guided_weight.detach(),
         "structure_gate": structure_gate.detach(),
         "sam_structure_support_mask": sam_structure_support_mask.detach(),
         "sam_weight": sam_weight.detach(),

@@ -35,7 +35,7 @@ from r6.engine.evaluator import evaluate
 from r6.engine.logger import OneLineProgress, append_jsonl, setup_logger
 from r6.engine.model_factory import build_deploy_model
 from r6.losses.boundary_losses import boundary_bce_loss
-from r6.losses.foreground_safe_kd import foreground_safe_sam_consistency_loss, foreground_safe_sam_kd_loss
+from r6.losses.foreground_safe_kd import foreground_safe_sam_consistency_loss, foreground_safe_sam_kd_loss, sam_guided_extent_kd_loss
 from r6.losses.sam_adapter_losses import sam_ce_dice_loss
 from r6.losses.tri_state_pseudo_loss import tri_state_pseudo_supervision_loss
 from r6.losses.supervised import supervised_loss
@@ -902,6 +902,7 @@ class SAGESAMR6Trainer:
             loss_sam_sup = x_l.new_tensor(0.0)
             loss_sam_unsup = x_l.new_tensor(0.0)
             loss_kd = x_l.new_tensor(0.0)
+            loss_sam_extent = x_l.new_tensor(0.0)
             loss_relation = x_l.new_tensor(0.0)
             loss_boundary = x_l.new_tensor(0.0)
             loss_corr = x_l.new_tensor(0.0)
@@ -997,6 +998,18 @@ class SAGESAMR6Trainer:
                     foreground_mask=foreground_mask,
                     gate=sam_gate_weight,
                 )
+                sam_guided_mask = targets.get("sam_guided_mask")
+                sam_guided_weight = targets.get("sam_guided_weight")
+                if sam_guided_mask is not None and sam_guided_weight is not None:
+                    guided_gate = sam_guided_weight.to(device=foreground_mask.device).float() * sam_guided_mask.to(device=foreground_mask.device).float()
+                    loss_sam_extent = sam_guided_extent_kd_loss(
+                        out_s1["logits"],
+                        sam_u["sam_prob"],
+                        targets["teacher_only_soft_target"],
+                        gate=guided_gate,
+                        temperature=float(self.config.get("sam", {}).get("extent_kd_temperature", self.config.get("sam", {}).get("kd_temperature", 1.0))),
+                        sam_mix=float(sam_loss_cfg.get("sam_extent_target_mix", 0.65)),
+                    )
                 if structure_cfg.get("use_online_relation", False):
                     relation_gate = targets["structure_gate"].to(device=foreground_mask.device).bool() & foreground_mask
                     loss_relation = online_sam_student_relation_loss(
@@ -1047,6 +1060,7 @@ class SAGESAMR6Trainer:
             )
             sam_aux_loss = (
                 float(sam_loss_cfg.get("sam_unsup_weight", 0.2)) * loss_sam_unsup
+                + float(sam_loss_cfg.get("sam_extent_weight", 0.0)) * loss_sam_extent
                 + float(sam_loss_cfg.get("sam_relation_weight", pseudo_cfg.get("relation_weight", 0.05))) * loss_relation
                 + float(sam_loss_cfg.get("sam_boundary_weight", pseudo_cfg.get("boundary_weight", 0.05))) * loss_boundary
             )
@@ -1102,6 +1116,7 @@ class SAGESAMR6Trainer:
             "loss_sam_sup": float(loss_sam_sup.detach()),
             "loss_sam_unsup": float(loss_sam_unsup.detach()),
             "loss_sam_kd": float(loss_kd.detach()),
+            "loss_sam_extent": float(loss_sam_extent.detach()),
             "loss_sam_sem": float(loss_kd.detach()),
             "unsup_weight": ramp,
             "r6_unsup_scale": float(unsup_scale),

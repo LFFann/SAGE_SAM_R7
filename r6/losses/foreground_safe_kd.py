@@ -56,3 +56,29 @@ def foreground_safe_sam_consistency_loss(
     log_prob = torch.log(_foreground_target(sam_prob).clamp_min(1e-6))
     ce = -(target * log_prob).sum(dim=1)
     return (ce * weight).sum() / weight.sum().clamp_min(1e-6)
+
+
+def sam_guided_extent_kd_loss(
+    student_logits: torch.Tensor,
+    sam_prob: torch.Tensor,
+    teacher_prob: torch.Tensor,
+    gate: torch.Tensor | None = None,
+    temperature: float = 1.0,
+    sam_mix: float = 0.65,
+):
+    """Distill SAM's foreground extent only inside vetted SAM-guided pixels."""
+
+    if student_logits.shape != sam_prob.shape or student_logits.shape != teacher_prob.shape:
+        raise ValueError(
+            "student_logits, sam_prob, and teacher_prob must share BCHW shape, "
+            f"got {tuple(student_logits.shape)}, {tuple(sam_prob.shape)}, {tuple(teacher_prob.shape)}"
+        )
+    weight = _valid_weight(student_logits, gate, None)
+    if weight.sum() <= 0:
+        return student_logits.new_tensor(0.0)
+    mix = max(0.0, min(1.0, float(sam_mix)))
+    target = (mix * sam_prob.to(student_logits.device, student_logits.dtype) + (1.0 - mix) * teacher_prob.to(student_logits.device, student_logits.dtype)).detach()
+    target = target / target.sum(dim=1, keepdim=True).clamp_min(1e-6)
+    log_student = F.log_softmax(student_logits / temperature, dim=1)
+    kd = F.kl_div(log_student, target, reduction="none").sum(dim=1) * (temperature**2)
+    return (kd.clamp_min(0.0) * weight).sum() / weight.sum().clamp_min(1e-6)
