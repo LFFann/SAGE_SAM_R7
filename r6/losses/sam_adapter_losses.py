@@ -77,6 +77,7 @@ def sam_prompt_consistency_loss(
             "prompt_consistency_abs_gap": 0.0,
         }
     fg_prompt = soft_prompt.float().clamp(1e-4, 1.0 - 1e-4)
+    fg_prompt_logits = torch.logit(fg_prompt)
     fg_target = sam_prob.detach().float()[:, 1 : 1 + fg_prompt.shape[1]]
     if teacher_prob is not None and teacher_prob.shape[1] > 1:
         teacher_fg = teacher_prob.detach().float()[:, 1 : 1 + fg_prompt.shape[1]]
@@ -113,7 +114,7 @@ def sam_prompt_consistency_loss(
             "prompt_consistency_abs_gap": 0.0,
         }
 
-    bce = F.binary_cross_entropy(fg_prompt, fg_target.clamp(0.0, 1.0), reduction="none")
+    bce = F.binary_cross_entropy_with_logits(fg_prompt_logits, fg_target.clamp(0.0, 1.0), reduction="none")
     loss = (bce * weight).sum() / weight.sum().clamp_min(1e-6)
     active = weight > 0
     gap = (fg_prompt.detach() - fg_target).abs()

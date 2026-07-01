@@ -8,6 +8,17 @@ from r6.utils.io import load_yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_training_source_avoids_autocast_unsafe_bce():
+    offenders = []
+    for root in [ROOT / "r6", ROOT / "Model"]:
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            if "binary_cross_entropy(" in text or "BCELoss" in text:
+                offenders.append(path.relative_to(ROOT).as_posix())
+
+    assert offenders == []
+
+
 def test_v100_tuned_config_matches_server_defaults():
     cfg = load_yaml(ROOT / "configs/r6_3class_v100_tuned.yaml")
 

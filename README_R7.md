@@ -139,6 +139,10 @@ changes the semi-supervised loop:
     the loss instead of forcing them to scalar floats, so class-specific
     ceilings such as `[0.0, 1.25, 1.15]` remain valid when prior feedback
     activates.
+30. R7.27 makes prompt consistency AMP-safe. The prompt generator consistency
+    objective now uses a logit-space BCE-with-logits path instead of probability
+    BCE, preserving the original objective while avoiding PyTorch autocast
+    failures when prompt consistency activates around iteration 1200.
 
 V100 training:
 

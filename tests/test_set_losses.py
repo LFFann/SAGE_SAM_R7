@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 
 from r6.losses.boundary_losses import boundary_bce_loss
 from r6.losses.consistency import strong_view_consistency_loss
@@ -142,6 +143,51 @@ def test_sam_prompt_consistency_trains_soft_prompt_only():
     assert soft_prompt.grad is not None
     assert soft_prompt.grad.abs().sum() > 0
     assert sam_prob.grad is None
+
+
+def test_sam_prompt_consistency_matches_probability_bce_value():
+    soft_prompt = torch.tensor([[[[0.20, 0.70], [0.40, 0.90]], [[0.30, 0.60], [0.80, 0.10]]]], requires_grad=True)
+    sam_prob = torch.tensor(
+        [[[[0.10, 0.10], [0.10, 0.10]], [[0.80, 0.40], [0.30, 0.90]], [[0.10, 0.50], [0.60, 0.00]]]]
+    )
+
+    loss, stats = sam_prompt_consistency_loss(soft_prompt, sam_prob, target_mix=1.0)
+    expected = F.binary_cross_entropy(
+        soft_prompt.clamp(1e-4, 1.0 - 1e-4),
+        sam_prob[:, 1:],
+        reduction="none",
+    ).mean()
+
+    assert stats["prompt_consistency_active"] == 1.0
+    assert torch.allclose(loss, expected, atol=1e-6)
+
+
+def test_sam_prompt_consistency_is_autocast_safe():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dtype = torch.float16 if device.type == "cuda" else torch.bfloat16
+    soft_prompt = torch.full((1, 2, 4, 4), 0.35, device=device, requires_grad=True)
+    sam_prob = torch.full((1, 3, 4, 4), 0.10, device=device)
+    sam_prob[:, 1] = 0.75
+    sam_prob[:, 2] = 0.15
+    teacher_prob = torch.full((1, 3, 4, 4), 0.10, device=device)
+    teacher_prob[:, 1] = 0.70
+    teacher_prob[:, 2] = 0.20
+    gate = torch.ones(1, 2, 4, 4, device=device)
+
+    with torch.amp.autocast(device_type=device.type, dtype=dtype, enabled=True):
+        loss, stats = sam_prompt_consistency_loss(
+            soft_prompt,
+            sam_prob,
+            teacher_prob=teacher_prob,
+            gate=gate,
+            target_mix=0.50,
+        )
+
+    assert torch.isfinite(loss)
+    assert stats["prompt_consistency_active"] == 1.0
+    loss.backward()
+    assert soft_prompt.grad is not None
+    assert torch.isfinite(soft_prompt.grad).all()
 
 
 def test_sam_prompt_consistency_empty_gate_is_zero():
