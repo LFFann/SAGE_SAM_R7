@@ -117,6 +117,12 @@ changes the semi-supervised loop:
     giving the student earlier ground-truth foreground supervision inside
     unlabeled ultrasound contexts, while the boost decays once the risky
     pseudo-label phase takes over.
+26. R7.23 adds baseline-aware stable checkpointing. Training still saves the
+    raw `best_val_dice.pth`, but also saves `best_val_stable.pth` using a
+    stable score that penalizes class-wise Dice deficits against the KnowSAM
+    baseline and foreground area drift. Test/deploy scripts prefer this stable
+    checkpoint when present, reducing the chance that a short-lived average
+    Dice peak with poor class-2 behavior becomes the reported model.
 
 V100 training:
 
@@ -144,6 +150,16 @@ Validation and test:
 
 ```bash
 bash scripts/test_r7_v100_tuned.sh
+```
+
+Choose checkpoint policy for validation/test:
+
+```bash
+# Default: use best_val_stable.pth when available, fallback to Dice best/latest.
+CHECKPOINT_KIND=stable bash scripts/test_r7_v100_tuned.sh
+
+# Force the raw average-Dice checkpoint.
+CHECKPOINT_KIND=dice bash scripts/test_r7_v100_tuned.sh
 ```
 
 Core ablation suite:
@@ -231,6 +247,11 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `ssl_class_balance_multi_candidate_ratio`
 - `ssl_class_balance_weight_class1`
 - `ssl_class_balance_weight_class2`
+- `stable_score`
+- `stable_class_deficit`
+- `stable_pred_ratio_penalty`
+- `best_stable_score`
+- `is_best_stable`
 - `hard_pseudo_reliability_active`
 - `singleton_weight_mean`
 - `singleton_weight_fg_mean`

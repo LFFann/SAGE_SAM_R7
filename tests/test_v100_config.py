@@ -44,6 +44,7 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["train"]["lr_decay_start_iteration"] <= 750
     assert 0.0 < cfg["train"]["min_lr_ratio"] <= 0.15
     assert cfg["train"]["deploy_best_checkpoint"] is True
+    assert cfg["train"]["deploy_best_metric"] == "stable"
     assert cfg["train"]["stop_on_val_collapse"] is True
     assert cfg["sam"]["peft_type"] == "adapter"
     assert cfg["sam"]["train_mask_decoder"] is False
@@ -177,6 +178,9 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert 0.10 < cfg["r6"]["stage1_unsup_max_scale"] <= 0.20
     assert 0.06 < cfg["r6"]["stage1_sam_max_scale"] <= 0.10
     assert cfg["eval"]["baseline"]["avg_dice"] > 0.760
+    assert cfg["eval"]["checkpoint_selection"]["stable_enabled"] is True
+    assert 0.0 < cfg["eval"]["checkpoint_selection"]["class_deficit_weight"] <= 0.60
+    assert 0.0 < cfg["eval"]["checkpoint_selection"]["pred_ratio_weight"] <= 0.05
     assert cfg["eval"]["topology_postprocess"]["enabled"] is True
     assert cfg["eval"]["topology_postprocess"]["max_components_per_class"] == [0, 2, 1]
     assert cfg["eval"]["topology_postprocess"]["min_component_area"] >= 4
@@ -208,6 +212,8 @@ def test_r7_launch_scripts_are_parameterized():
     assert "configs/r7_3class_v100_tuned.yaml" in train_script
     assert "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP" in train_script
     assert "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP" in test_script
+    assert "CHECKPOINT_KIND=" in test_script
+    assert "best_val_stable.pth" in test_script
     assert "ABLATIONS=" in ablate_script
     assert "no_sam" in ablate_script
     assert "prior_feedback.enabled false" in ablate_script

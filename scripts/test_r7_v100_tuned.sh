@@ -10,7 +10,14 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP}"
 CONFIG="${CONFIG:-${OUTPUT_DIR}/resolved_config.yaml}"
-CHECKPOINT="${CHECKPOINT:-${OUTPUT_DIR}/checkpoints/best_val_dice.pth}"
+CHECKPOINT_KIND="${CHECKPOINT_KIND:-stable}"
+if [[ -z "${CHECKPOINT:-}" ]]; then
+  if [[ "${CHECKPOINT_KIND}" == "stable" && -f "${OUTPUT_DIR}/checkpoints/best_val_stable.pth" ]]; then
+    CHECKPOINT="${OUTPUT_DIR}/checkpoints/best_val_stable.pth"
+  else
+    CHECKPOINT="${OUTPUT_DIR}/checkpoints/best_val_dice.pth"
+  fi
+fi
 if [[ ! -f "${CHECKPOINT}" && -f "${OUTPUT_DIR}/checkpoints/latest.pth" ]]; then
   CHECKPOINT="${OUTPUT_DIR}/checkpoints/latest.pth"
 fi

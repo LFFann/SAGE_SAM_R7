@@ -76,3 +76,34 @@ def test_self_reliance_default_starts_at_seventy_percent():
 
     assert trainer._sam_self_reliance_scale(70) == 1.0
     assert trainer._sam_self_reliance_scale(72) == 0.25
+
+
+def test_stable_validation_score_penalizes_class_gap_and_area_drift():
+    trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
+    trainer.num_classes = 3
+    trainer.config = {
+        "pseudo": {"foreground_classes": [1, 2]},
+        "eval": {
+            "baseline": {"class_dice": [None, 0.72, 0.80]},
+            "checkpoint_selection": {
+                "stable_enabled": True,
+                "class_deficit_weight": 0.5,
+                "pred_ratio_weight": 0.1,
+                "pred_to_gt_log_tolerance": 0.0,
+                "topology_removed_weight": 0.0,
+            },
+        },
+    }
+
+    stable, logs = trainer._stable_validation_score(
+        {
+            "avg_dice": 0.76,
+            "class_dice": [0.99, 0.74, 0.72],
+            "class_1_pred_to_gt_ratio": 1.0,
+            "class_2_pred_to_gt_ratio": 1.8,
+        }
+    )
+
+    assert stable < 0.76
+    assert logs["stable_class_deficit"] > 0.0
+    assert logs["stable_pred_ratio_penalty"] > 0.0

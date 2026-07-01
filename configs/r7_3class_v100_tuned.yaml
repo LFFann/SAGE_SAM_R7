@@ -43,6 +43,7 @@ train:
   unsup_ramp_iterations: 8000
   gradient_accumulation: 2
   deploy_best_checkpoint: true
+  deploy_best_metric: stable
   stop_on_val_collapse: true
   val_collapse_delta: 0.15
   val_collapse_patience: 2
@@ -434,6 +435,12 @@ eval:
   baseline:
     avg_dice: 0.7601364254951477
     class_dice: [null, 0.7218010774222662, 0.7984717713624256]
+  checkpoint_selection:
+    stable_enabled: true
+    class_deficit_weight: 0.45
+    pred_ratio_weight: 0.03
+    pred_to_gt_log_tolerance: 0.25
+    topology_removed_weight: 0.10
 
 diagnostics:
   train_visualize_every: 250

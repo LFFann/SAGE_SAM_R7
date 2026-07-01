@@ -202,7 +202,7 @@ class SAGESAMR6Trainer:
         self.amp = bool(train_cfg.get("amp", False)) and self.device.type == "cuda"
         self.scaler = make_grad_scaler(self.device.type, self.amp)
         self.grad_accum_steps = max(1, int(train_cfg.get("gradient_accumulation", 1)))
-        self.best_metrics = {"avg_dice": -1.0, "avg_hd95": float("inf")}
+        self.best_metrics = {"avg_dice": -1.0, "avg_hd95": float("inf"), "stable_score": -float("inf")}
         self.start_iteration = 0
         self.calibration_iter = None
         self.calibration_update_count = 0
@@ -589,8 +589,18 @@ class SAGESAMR6Trainer:
                     break
         progress.close()
         latest = self.output_dir / "checkpoints" / "latest.pth"
-        best = self.output_dir / "checkpoints" / "best_val_dice.pth"
-        deploy_src = best if best.exists() and bool(self.config["train"].get("deploy_best_checkpoint", True)) else latest
+        best_dice = self.output_dir / "checkpoints" / "best_val_dice.pth"
+        best_stable = self.output_dir / "checkpoints" / "best_val_stable.pth"
+        deploy_metric = str(self.config["train"].get("deploy_best_metric", "stable")).lower()
+        if bool(self.config["train"].get("deploy_best_checkpoint", True)):
+            if deploy_metric == "stable" and best_stable.exists():
+                deploy_src = best_stable
+            elif best_dice.exists():
+                deploy_src = best_dice
+            else:
+                deploy_src = latest
+        else:
+            deploy_src = latest
         export_deploy_payload(deploy_src, self.output_dir / "checkpoints" / "deploy_student.pth")
         append_jsonl(
             self.output_dir / "diagnostics.jsonl",
@@ -1154,6 +1164,49 @@ class SAGESAMR6Trainer:
             for idx, gap in enumerate(gaps):
                 metrics[f"baseline_gap_class{idx}_dice"] = gap
         return metrics
+
+    def _stable_validation_score(self, metrics: dict) -> tuple[float, dict[str, float]]:
+        cfg = self.config.get("eval", {}).get("checkpoint_selection", {})
+        avg_dice = float(metrics.get("avg_dice", 0.0))
+        if not bool(cfg.get("stable_enabled", True)):
+            return avg_dice, {
+                "stable_score": avg_dice,
+                "stable_class_deficit": 0.0,
+                "stable_pred_ratio_penalty": 0.0,
+                "stable_topology_penalty": 0.0,
+            }
+
+        fg_classes = [int(cls) for cls in self.config.get("pseudo", {}).get("foreground_classes", list(range(1, self.num_classes)))]
+        class_dice = metrics.get("class_dice", [])
+        baseline_class = self.config.get("eval", {}).get("baseline", {}).get("class_dice", [])
+        deficits = []
+        for cls in fg_classes:
+            if cls >= len(class_dice) or cls >= len(baseline_class) or baseline_class[cls] is None:
+                continue
+            deficits.append(max(0.0, float(baseline_class[cls]) - float(class_dice[cls])))
+        class_deficit = sum(deficits) / max(1, len(deficits))
+
+        pred_penalties = []
+        tolerance = float(cfg.get("pred_to_gt_log_tolerance", 0.25))
+        for cls in fg_classes:
+            ratio = metrics.get(f"class_{cls}_pred_to_gt_ratio")
+            if ratio is None:
+                continue
+            ratio = max(float(ratio), 1e-6)
+            pred_penalties.append(max(0.0, abs(math.log(ratio)) - tolerance))
+        pred_ratio_penalty = sum(pred_penalties) / max(1, len(pred_penalties))
+
+        topology_penalty = float(metrics.get("topology_removed_pixel_ratio", 0.0))
+        class_weight = float(cfg.get("class_deficit_weight", 0.45))
+        pred_weight = float(cfg.get("pred_ratio_weight", 0.03))
+        topology_weight = float(cfg.get("topology_removed_weight", 0.10))
+        score = avg_dice - class_weight * class_deficit - pred_weight * pred_ratio_penalty - topology_weight * topology_penalty
+        return score, {
+            "stable_score": float(score),
+            "stable_class_deficit": float(class_deficit),
+            "stable_pred_ratio_penalty": float(pred_ratio_penalty),
+            "stable_topology_penalty": float(topology_penalty),
+        }
 
     def train_one_iter(self, batch_l, batch_u, iteration: int, update: bool = True, step_optimizer: bool = True):
         lr_scale = self._update_learning_rate(iteration)
@@ -1923,8 +1976,12 @@ class SAGESAMR6Trainer:
             calibration_update_count=self.calibration_update_count,
         )
         append_jsonl(self.output_dir / "diagnostics.jsonl", {"event": "checkpoint_saved", "iteration": iteration, "path": str(latest)})
+        stable_score, stable_logs = self._stable_validation_score(metrics)
+        metrics.update(stable_logs)
         previous_best = float(self.best_metrics.get("avg_dice", -1.0))
+        previous_stable = float(self.best_metrics.get("stable_score", -float("inf")))
         is_best_dice = False
+        is_best_stable = False
         if metrics["avg_dice"] >= previous_best:
             self.best_metrics["avg_dice"] = metrics["avg_dice"]
             is_best_dice = True
@@ -1966,6 +2023,28 @@ class SAGESAMR6Trainer:
                     self.stop_requested = True
             else:
                 self.val_collapse_count = 0
+        if stable_score >= previous_stable:
+            self.best_metrics["stable_score"] = stable_score
+            is_best_stable = True
+            save_checkpoint(
+                ckpt_dir / "best_val_stable.pth",
+                iteration=iteration,
+                student=self.student,
+                fast_teacher=self.dual_teacher.fast,
+                slow_teacher=self.dual_teacher.slow,
+                optimizer=self.optimizer,
+                scaler=self.scaler,
+                calibrator=self.calibrator,
+                sam_utility=self.sam_utility,
+                mentor=self.mentor,
+                config=self.config,
+                best_metrics=self.best_metrics,
+                calibration_update_count=self.calibration_update_count,
+            )
+            append_jsonl(
+                self.output_dir / "diagnostics.jsonl",
+                {"event": "best_updated", "metric": "stable_score", "iteration": iteration, "stable_score": float(stable_score)},
+            )
         hd = metrics.get("avg_hd95", float("inf"))
         hd_key = hd if not math.isnan(hd) else float("inf")
         if hd_key <= self.best_metrics.get("avg_hd95", float("inf")):
@@ -1988,14 +2067,17 @@ class SAGESAMR6Trainer:
         best_dice = float(self.best_metrics.get("avg_dice", metrics["avg_dice"]))
         metrics["best_dice"] = best_dice
         metrics["best_avg_dice"] = best_dice
+        metrics["best_stable_score"] = float(self.best_metrics.get("stable_score", stable_score))
         metrics["is_best_dice"] = 1.0 if is_best_dice else 0.0
+        metrics["is_best_stable"] = 1.0 if is_best_stable else 0.0
         row = {"iteration": iteration, "phase": "val", **metrics}
         append_jsonl(self.output_dir / "metrics.jsonl", row)
         self.logger.info(
-            "val iter=%d avg_dice=%.4f best_dice=%.4f gap=%.4f avg_iou=%.4f c1_pg=%.3f c2_pg=%.3f fg_pred=%.4f fg_gt=%.4f",
+            "val iter=%d avg_dice=%.4f best_dice=%.4f stable=%.4f gap=%.4f avg_iou=%.4f c1_pg=%.3f c2_pg=%.3f fg_pred=%.4f fg_gt=%.4f",
             iteration,
             metrics["avg_dice"],
             best_dice,
+            float(metrics.get("stable_score", float("nan"))),
             float(metrics.get("baseline_gap_avg_dice", float("nan"))),
             metrics["avg_iou"],
             float(metrics.get("class_1_pred_to_gt_ratio", float("nan"))),
