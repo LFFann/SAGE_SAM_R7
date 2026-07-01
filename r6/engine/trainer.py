@@ -63,6 +63,7 @@ from r6.ssl.foreground_correlation_locality import (
 )
 from r6.ssl.online_sam_relation import online_sam_student_relation_loss
 from r6.ssl.foreground_safe_target_builder import build_foreground_safe_targets
+from r6.ssl.hard_pseudo_reliability import apply_hard_pseudo_reliability
 from r6.utils.visualization import save_diagnostic_grid
 
 
@@ -1244,6 +1245,16 @@ class SAGESAMR6Trainer:
                 "ssl_class_balance_uncertainty_scale_mean": 1.0,
                 "ssl_class_balance_multi_candidate_ratio": 0.0,
             }
+            hard_pseudo_logs = {
+                "hard_pseudo_reliability_active": 0.0,
+                "singleton_weight_mean": 1.0,
+                "singleton_weight_fg_mean": 1.0,
+                "singleton_weight_bg_mean": 1.0,
+                "singleton_entropy_mean": 0.0,
+                "hard_pseudo_fg_demoted_ratio": 0.0,
+                "hard_pseudo_bg_conflict_ratio": 0.0,
+                "hard_pseudo_sam_agree_fg_ratio": 0.0,
+            }
             sam_floor_scale = 1.0
             sam_floor_logs = {
                 "sam_floor_trust_conditioned": 0.0,
@@ -1275,6 +1286,11 @@ class SAGESAMR6Trainer:
             targets = build_foreground_safe_targets(teacher_out, sam_u, self.calibrator, pseudo_runtime_cfg)
             targets, stage_weights, trust_logs = self._apply_dynamic_trust(iteration, targets, stage_weights)
             stage_weights, prior_feedback_logs = self._apply_student_prior_feedback(iteration, student_w_prob, stage_weights)
+            targets, hard_pseudo_logs = apply_hard_pseudo_reliability(
+                targets,
+                self.config.get("losses", {}).get("hard_pseudo_reliability", {}),
+                iteration,
+            )
             out_s1 = self.student(x_u_s1, return_features=True)
             out_s2 = self.student(x_u_s2, return_features=True, feature_dropout="complementary")
             copy_paste_cfg = self.config.get("copy_paste", {})
@@ -1721,6 +1737,7 @@ class SAGESAMR6Trainer:
             **prompt_consistency_stats,
             **trust_logs,
             **sam_floor_logs,
+            **hard_pseudo_logs,
             **ssl_class_balance_logs,
             **prior_feedback_logs,
             **prior_feedback_loss_stats,

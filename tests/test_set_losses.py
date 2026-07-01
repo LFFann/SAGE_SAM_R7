@@ -19,6 +19,20 @@ def test_singleton_empty_mask_no_nan():
     assert torch.isfinite(loss)
 
 
+def test_singleton_ce_loss_respects_pixel_weight():
+    logits = torch.zeros(1, 3, 1, 2, requires_grad=True)
+    logits.data[:, 1, 0, 0] = 4.0
+    logits.data[:, 0, 0, 1] = 4.0
+    labels = torch.tensor([[[1, 1]]])
+    mask = torch.ones(1, 1, 2, dtype=torch.bool)
+    full = singleton_ce_loss(logits, labels, mask)
+    weighted = singleton_ce_loss(logits, labels, mask, weight=torch.tensor([[[1.0, 0.05]]]))
+
+    assert weighted < full
+    weighted.backward()
+    assert logits.grad is not None
+
+
 def test_set_cross_entropy_backward():
     logits = torch.randn(1, 3, 4, 4, requires_grad=True)
     candidate = torch.zeros(1, 3, 4, 4, dtype=torch.bool)

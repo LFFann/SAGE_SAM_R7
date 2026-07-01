@@ -103,6 +103,13 @@ changes the semi-supervised loop:
     a soft semantic anchor for reliable unlabeled foreground candidates. This
     gives class-2 a feature-level route to benefit from unlabeled data without
     requiring SAM masks to be pixel-perfect.
+24. R7.21 adds uncertainty-aware hard pseudo-label relaxation. Singleton hard
+    pseudo labels are no longer treated as uniformly reliable: high-entropy,
+    SAM-disagreed, or late background singleton pixels are down-weighted, while
+    low-reliability foreground singletons are demoted back to set-valued
+    ambiguous supervision. SAM-supported foreground singletons keep stronger
+    weight, so SAM contributes as a reliability assessor instead of a dense
+    noisy teacher.
 
 V100 training:
 
@@ -176,7 +183,8 @@ bash scripts/ablate_r7_v100.sh
 
 It includes `no_sam`, `no_prior_feedback`, `no_copy_paste`,
 `no_strong_consistency`, `no_trust_conditioned_floor`,
-`no_ssl_class_balance`, `no_prototype_anchor`,
+`no_ssl_class_balance`, `no_hard_pseudo_reliability`,
+`no_prototype_anchor`,
 `no_topology_filter`, `no_prompt_consistency`, `no_eval_topology`,
 `no_boundary`, and `no_class_balance`.
 
@@ -212,6 +220,14 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `ssl_class_balance_multi_candidate_ratio`
 - `ssl_class_balance_weight_class1`
 - `ssl_class_balance_weight_class2`
+- `hard_pseudo_reliability_active`
+- `singleton_weight_mean`
+- `singleton_weight_fg_mean`
+- `singleton_weight_bg_mean`
+- `singleton_entropy_mean`
+- `hard_pseudo_fg_demoted_ratio`
+- `hard_pseudo_bg_conflict_ratio`
+- `hard_pseudo_sam_agree_fg_ratio`
 - `loss_prototype_anchor`
 - `prototype_anchor_effective_weight`
 - `prototype_anchor_active`

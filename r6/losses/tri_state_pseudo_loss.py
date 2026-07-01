@@ -20,9 +20,10 @@ def tri_state_pseudo_supervision_loss(logits: torch.Tensor, targets: dict, rank_
     negative_mask = targets["negative_mask"].bool()
     soft_target = targets.get("soft_target")
     candidate_weight = targets.get("candidate_weight")
+    singleton_weight = targets.get("singleton_weight")
     negative_weight = targets.get("safe_negative_weight")
 
-    loss_hard = singleton_ce_loss(logits, labels, singleton_mask)
+    loss_hard = singleton_ce_loss(logits, labels, singleton_mask, weight=singleton_weight)
     loss_fuzzy = soft_fuzzy_positive_loss(logits, soft_target, ambiguous_mask, candidate_weight)
     loss_set = set_cross_entropy_loss(logits, candidate_set, ambiguous_mask, candidate_weight)
     loss_rank = rank_margin_loss(logits, candidate_set, ambiguous_mask, rank_margin, candidate_weight)
@@ -30,7 +31,7 @@ def tri_state_pseudo_supervision_loss(logits: torch.Tensor, targets: dict, rank_
     return {
         "loss_singleton": loss_hard,
         "loss_hard": loss_hard,
-        "loss_hard_fg": singleton_ce_loss(logits, labels, singleton_mask & (labels > 0)),
+        "loss_hard_fg": singleton_ce_loss(logits, labels, singleton_mask & (labels > 0), weight=singleton_weight),
         "loss_set": loss_set,
         "loss_rank": loss_rank,
         "loss_negative": loss_neg,

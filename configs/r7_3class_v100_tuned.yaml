@@ -356,6 +356,27 @@ losses:
     multi_candidate_scale: 0.85
     min_weight: 0.02
     max_weight: 1.25
+  hard_pseudo_reliability:
+    enabled: true
+    start_iter: 1200
+    entropy_discount: 0.45
+    min_entropy_scale: 0.45
+    min_weight: 0.12
+    max_weight: 1.0
+    foreground_min_weight: 0.28
+    background_scale: 0.65
+    background_decay_start: 2400
+    background_decay_iterations: 2400
+    background_min_scale: 0.35
+    background_sam_conflict_support: 0.08
+    background_sam_conflict_scale: 0.35
+    sam_agree_min_quality: 0.18
+    sam_bonus: 0.15
+    sam_disagreement_scale: 0.55
+    demote_low_foreground: true
+    demote_confidence_threshold: 0.55
+    demote_entropy_threshold: 0.55
+    demote_weight_threshold: 0.25
   foreground_prototype:
     enabled: true
     start_iter: 1200

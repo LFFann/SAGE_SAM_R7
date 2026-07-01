@@ -4,12 +4,19 @@ import torch
 import torch.nn.functional as F
 
 
-def singleton_ce_loss(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor, ignore_index: int = 255):
+def singleton_ce_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    mask: torch.Tensor,
+    ignore_index: int = 255,
+    weight: torch.Tensor | None = None,
+):
     if mask.sum() == 0:
         return logits.new_tensor(0.0)
     labels = labels.clone()
     labels[~mask] = ignore_index
-    return F.cross_entropy(logits, labels, ignore_index=ignore_index)
+    loss = F.cross_entropy(logits, labels, ignore_index=ignore_index, reduction="none")
+    return _weighted_mean(loss, mask, weight)
 
 
 def _weighted_mean(loss_map: torch.Tensor, mask: torch.Tensor, weight: torch.Tensor | None = None):
@@ -75,7 +82,8 @@ def set_valued_supervision_loss(logits: torch.Tensor, targets: dict, rank_margin
     soft_target = targets.get("soft_target")
     candidate_weight = targets.get("candidate_weight")
     negative_weight = targets.get("safe_negative_weight")
-    l_single = singleton_ce_loss(logits, labels, singleton_mask)
+    singleton_weight = targets.get("singleton_weight")
+    l_single = singleton_ce_loss(logits, labels, singleton_mask, weight=singleton_weight)
     l_set = set_cross_entropy_loss(logits, candidate_set, ambiguous_mask, candidate_weight)
     l_rank = rank_margin_loss(logits, candidate_set, ambiguous_mask, rank_margin, candidate_weight)
     l_neg = safe_negative_loss(logits, negative_set, negative_mask, negative_weight)
