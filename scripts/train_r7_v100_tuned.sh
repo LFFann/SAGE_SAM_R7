@@ -8,6 +8,12 @@ cd "${REPO_ROOT}"
 export PYTHONUNBUFFERED=1
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:128}"
+if [[ ! "${OMP_NUM_THREADS:-}" =~ ^[0-9]+$ ]]; then
+  export OMP_NUM_THREADS=4
+fi
+if [[ ! "${MKL_NUM_THREADS:-}" =~ ^[0-9]+$ ]]; then
+  export MKL_NUM_THREADS="${OMP_NUM_THREADS}"
+fi
 
 CONFIG="${CONFIG:-configs/r7_3class_v100_tuned.yaml}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP}"
