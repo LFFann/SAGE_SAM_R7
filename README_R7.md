@@ -123,6 +123,12 @@ changes the semi-supervised loop:
     baseline and foreground area drift. Test/deploy scripts prefer this stable
     checkpoint when present, reducing the chance that a short-lived average
     Dice peak with poor class-2 behavior becomes the reported model.
+27. R7.24 adds class-balanced labeled foreground replay. The copy-paste branch
+    now builds per-class labeled foreground pools from the train split and can
+    replace copy-paste source samples with missing/under-covered foreground
+    classes, especially class-2. This keeps early foreground replay from being
+    limited by small-batch class absence and strengthens the rare-class route
+    without adding model parameters or trusting extra pseudo labels.
 
 V100 training:
 
@@ -235,6 +241,12 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `copy_paste_coverage_boost`
 - `copy_paste_coverage_deficit`
 - `copy_paste_effective_cap`
+- `copy_paste_replay_active`
+- `copy_paste_replay_samples`
+- `copy_paste_replay_class1`
+- `copy_paste_replay_class2`
+- `copy_paste_replay_pool_class1`
+- `copy_paste_replay_pool_class2`
 - `copy_paste_fg_ratio`
 - `class_balanced_ce_weight_class1`
 - `class_balanced_ce_weight_class2`

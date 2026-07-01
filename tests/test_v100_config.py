@@ -150,6 +150,9 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["copy_paste"]["max_foreground_ratio"] <= 0.06
     assert cfg["copy_paste"]["coverage_boost"]["enabled"] is True
     assert cfg["copy_paste"]["coverage_boost"]["max_boost"] <= 1.50
+    assert cfg["copy_paste"]["class_balanced_replay"]["enabled"] is True
+    assert cfg["copy_paste"]["class_balanced_replay"]["batch_size"] <= 2
+    assert cfg["copy_paste"]["class_balanced_replay"]["max_replay_samples"] <= 2
     assert cfg["losses"]["class_balanced_ce"]["enabled"] is True
     assert cfg["losses"]["class_balanced_ce"]["background_weight"] <= 0.30
     assert cfg["losses"]["class_balanced_ce"]["foreground_scale"] <= 1.20

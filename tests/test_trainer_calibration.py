@@ -107,3 +107,35 @@ def test_stable_validation_score_penalizes_class_gap_and_area_drift():
     assert stable < 0.76
     assert logs["stable_class_deficit"] > 0.0
     assert logs["stable_pred_ratio_penalty"] > 0.0
+
+
+def test_copy_paste_source_batch_replays_missing_foreground_class():
+    trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
+    trainer.num_classes = 3
+    trainer.config = {"pseudo": {"foreground_classes": [1, 2]}}
+    trainer.copy_paste_replay_available = {2: 1.0}
+    replay_image = torch.full((1, 3, 4, 4), 0.7)
+    replay_mask = torch.zeros(1, 4, 4, dtype=torch.long)
+    replay_mask[:, 1:3, 1:3] = 2
+    trainer.copy_paste_replay_iters = {2: cycle([{"image": replay_image, "mask": replay_mask}])}
+    x_l = torch.zeros(2, 3, 4, 4)
+    y_l = torch.zeros(2, 4, 4, dtype=torch.long)
+    y_l[:, 0:2, 0:2] = 1
+
+    source_x, source_y, logs = trainer._copy_paste_source_batch(
+        x_l,
+        y_l,
+        {"per_class_foreground_participation_ratio": [0.0, 0.004, 0.0]},
+        {
+            "class_balanced_replay": {
+                "enabled": True,
+                "max_replay_samples": 1,
+                "min_class_ratio": [0.0, 0.004, 0.003],
+            }
+        },
+    )
+
+    assert logs["copy_paste_replay_active"] == 1.0
+    assert logs["copy_paste_replay_class2"] == 1.0
+    assert bool((source_y == 2).any())
+    assert torch.allclose(source_x[0], replay_image[0])

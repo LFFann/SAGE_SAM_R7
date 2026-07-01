@@ -209,6 +209,8 @@ class SAGESAMR6Trainer:
         self.val_collapse_count = 0
         self.stop_requested = False
         self.student_prior_ema = None
+        self.copy_paste_replay_iters = {}
+        self.copy_paste_replay_available = {}
         diag_cfg = config.get("diagnostics", {})
         self.train_visualize_every = int(diag_cfg.get("train_visualize_every", 0))
         self.train_visualize_max_samples = max(1, int(diag_cfg.get("train_visualize_max_samples", 1)))
@@ -303,6 +305,7 @@ class SAGESAMR6Trainer:
         self.labeled_ds = Subset(labeled_all, train_idx)
         self.calibration_ds = Subset(labeled_all, cal_idx)
         self._configure_labeled_foreground_prior(labeled_all)
+        self._build_copy_paste_replay_pools(labeled_all, train_idx)
         self.unlabeled_ds = SegmentationDataset2D(split=cfg.get("unlabeled_subdir", "unlabeled"), has_mask=False, **common)
         self.val_ds = SegmentationDataset2D(split=cfg.get("val_subdir", "val"), has_mask=True, **common)
         self.test_ds = SegmentationDataset2D(split=cfg.get("test_subdir", "test"), has_mask=True, **common)
@@ -324,6 +327,42 @@ class SAGESAMR6Trainer:
         self.val_loader = DataLoader(self.val_ds, batch_size=self.config.get("eval", {}).get("batch_size", 1), shuffle=False, num_workers=0)
         self.calibration_loader = DataLoader(self.calibration_ds, batch_size=self.config.get("eval", {}).get("batch_size", 1), shuffle=False, num_workers=0)
         self.calibration_iter = cycle(self.calibration_loader)
+
+    def _build_copy_paste_replay_pools(self, labeled_all: SegmentationDataset2D, train_idx: list[int]):
+        replay_cfg = self.config.get("copy_paste", {}).get("class_balanced_replay", {})
+        self.copy_paste_replay_iters = {}
+        self.copy_paste_replay_available = {}
+        if not bool(replay_cfg.get("enabled", False)):
+            return
+        fg_classes = [int(cls) for cls in self.config.get("pseudo", {}).get("foreground_classes", list(range(1, self.num_classes))) if 0 < int(cls) < self.num_classes]
+        class_indices = {cls: [] for cls in fg_classes}
+        for idx in train_idx:
+            rec = labeled_all.records[int(idx)]
+            mask = labeled_all._load_mask(rec["mask_path"])
+            for cls in fg_classes:
+                if bool((mask == cls).any()):
+                    class_indices[cls].append(int(idx))
+        batch_size = int(replay_cfg.get("batch_size", min(self.config.get("train", {}).get("batch_size_labeled", 2), 2)))
+        num_workers = int(replay_cfg.get("num_workers", 0))
+        for cls, indices in class_indices.items():
+            self.copy_paste_replay_available[cls] = float(len(indices))
+            if not indices:
+                continue
+            loader = DataLoader(
+                Subset(labeled_all, indices),
+                batch_size=max(1, batch_size),
+                shuffle=True,
+                num_workers=max(0, num_workers),
+                drop_last=False,
+            )
+            self.copy_paste_replay_iters[cls] = cycle(loader)
+        append_jsonl(
+            self.output_dir / "diagnostics.jsonl",
+            {
+                "event": "copy_paste_replay_pools",
+                **{f"copy_paste_replay_pool_class{cls}": float(len(indices)) for cls, indices in class_indices.items()},
+            },
+        )
 
     def _configure_labeled_foreground_prior(self, labeled_all: SegmentationDataset2D):
         pseudo_cfg = self.config.setdefault("pseudo", {})
@@ -1208,6 +1247,64 @@ class SAGESAMR6Trainer:
             "stable_topology_penalty": float(topology_penalty),
         }
 
+    def _copy_paste_source_batch(self, x_l: torch.Tensor, y_l: torch.Tensor, target_stats: dict, copy_paste_cfg: dict):
+        replay_cfg = copy_paste_cfg.get("class_balanced_replay", {})
+        logs = {
+            "copy_paste_replay_active": 0.0,
+            "copy_paste_replay_samples": 0.0,
+            "copy_paste_replay_missing_pool": 0.0,
+        }
+        fg_classes = [int(cls) for cls in self.config.get("pseudo", {}).get("foreground_classes", list(range(1, self.num_classes))) if 0 < int(cls) < self.num_classes]
+        for cls in fg_classes:
+            logs[f"copy_paste_replay_class{cls}"] = 0.0
+            logs[f"copy_paste_replay_pool_class{cls}"] = float(self.copy_paste_replay_available.get(cls, 0.0))
+        if not bool(replay_cfg.get("enabled", False)) or not self.copy_paste_replay_iters:
+            return x_l, y_l, logs
+
+        ratios = target_stats.get("per_class_foreground_participation_ratio", [])
+        min_ratio_cfg = replay_cfg.get("min_class_ratio", copy_paste_cfg.get("coverage_boost", {}).get("min_class_ratio", 0.0))
+        max_samples = max(0, int(replay_cfg.get("max_replay_samples", len(fg_classes))))
+        if max_samples <= 0:
+            return x_l, y_l, logs
+
+        needed = []
+        for cls in fg_classes:
+            batch_has_class = bool((y_l == cls).any())
+            observed = float(ratios[cls]) if isinstance(ratios, (list, tuple)) and cls < len(ratios) else 0.0
+            threshold = self._class_trust_value({"min_class_ratio": min_ratio_cfg}, "min_class_ratio", cls, 0.0)
+            if (not batch_has_class) or (threshold > 0.0 and observed < threshold):
+                needed.append(cls)
+        if not needed:
+            return x_l, y_l, logs
+
+        source_x = x_l.clone()
+        source_y = y_l.clone()
+        slot = 0
+        used = 0
+        for cls in needed:
+            if used >= max_samples:
+                break
+            replay_iter = self.copy_paste_replay_iters.get(cls)
+            if replay_iter is None:
+                logs["copy_paste_replay_missing_pool"] += 1.0
+                continue
+            replay_batch = next(replay_iter)
+            replay_x = replay_batch["image"].to(device=x_l.device, dtype=x_l.dtype)
+            replay_y = replay_batch["mask"].to(device=y_l.device, dtype=y_l.dtype)
+            for ridx in range(replay_x.shape[0]):
+                if used >= max_samples or slot >= source_x.shape[0]:
+                    break
+                if not bool((replay_y[ridx] == cls).any()):
+                    continue
+                source_x[slot] = replay_x[ridx]
+                source_y[slot] = replay_y[ridx]
+                logs[f"copy_paste_replay_class{cls}"] += 1.0
+                logs["copy_paste_replay_samples"] += 1.0
+                used += 1
+                slot += 1
+        logs["copy_paste_replay_active"] = 1.0 if used > 0 else 0.0
+        return source_x, source_y, logs
+
     def train_one_iter(self, batch_l, batch_u, iteration: int, update: bool = True, step_optimizer: bool = True):
         lr_scale = self._update_learning_rate(iteration)
         self.student.train()
@@ -1323,6 +1420,14 @@ class SAGESAMR6Trainer:
                 "copy_paste_fg_ratio": 0.0,
                 "copy_paste_kept_samples": 0.0,
             }
+            copy_paste_replay_logs = {
+                "copy_paste_replay_active": 0.0,
+                "copy_paste_replay_samples": 0.0,
+                "copy_paste_replay_missing_pool": 0.0,
+            }
+            for cls in self.config.get("pseudo", {}).get("foreground_classes", list(range(1, self.num_classes))):
+                copy_paste_replay_logs[f"copy_paste_replay_class{int(cls)}"] = 0.0
+                copy_paste_replay_logs[f"copy_paste_replay_pool_class{int(cls)}"] = float(self.copy_paste_replay_available.get(int(cls), 0.0))
             copy_paste_weight_logs = {
                 "copy_paste_base_weight": 0.0,
                 "copy_paste_coverage_boost": 1.0,
@@ -1360,9 +1465,15 @@ class SAGESAMR6Trainer:
                 and iteration % copy_paste_interval == 0
             )
             if copy_paste_should_run:
-                mixed_cp, target_cp, mask_cp, copy_paste_stats = build_labeled_foreground_copy_paste(
+                cp_source_x, cp_source_y, copy_paste_replay_logs = self._copy_paste_source_batch(
                     x_l,
                     y_l,
+                    targets.get("stats", {}),
+                    copy_paste_cfg,
+                )
+                mixed_cp, target_cp, mask_cp, copy_paste_stats = build_labeled_foreground_copy_paste(
+                    cp_source_x,
+                    cp_source_y,
                     x_u_s1.detach(),
                     foreground_classes=self.config.get("pseudo", {}).get("foreground_classes"),
                     ignore_index=self.ignore_index,
@@ -1804,6 +1915,7 @@ class SAGESAMR6Trainer:
             **prior_feedback_logs,
             **prior_feedback_loss_stats,
             **copy_paste_stats,
+            **copy_paste_replay_logs,
             **copy_paste_weight_logs,
             **prototype_anchor_stats,
             **targets["stats"],
