@@ -28,6 +28,8 @@ DEFAULT_FIELDS = [
     "class_balanced_ce_weight_class1",
     "class_balanced_ce_weight_class2",
     "loss_sup_boundary",
+    "loss_strong_consistency",
+    "strong_view_consistency_mask_ratio",
     "sam_kd_effective_weight",
     "loss_sam_kd",
     "trust_unsafe",

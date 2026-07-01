@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 
 from r6.losses.boundary_losses import boundary_bce_loss
+from r6.losses.consistency import strong_view_consistency_loss
 from r6.losses.foreground_safe_kd import sam_guided_extent_kd_loss, student_anchored_sam_agreement_loss
 from r6.losses.prior_feedback import student_prior_feedback_loss
 from r6.losses.set_valued_losses import rank_margin_loss, safe_negative_loss, set_cross_entropy_loss, singleton_ce_loss
@@ -188,3 +189,31 @@ def test_boundary_bce_collapses_multichannel_target_for_single_head():
     assert torch.isfinite(loss)
     loss.backward()
     assert logits.grad is not None
+
+
+def test_strong_view_consistency_loss_respects_mask_and_backpropagates():
+    logits_a = torch.zeros(1, 3, 2, 2, requires_grad=True)
+    logits_b = torch.zeros(1, 3, 2, 2, requires_grad=True)
+    logits_b.data[:, 1, 0, 0] = 3.0
+    mask = torch.tensor([[[True, False], [False, False]]])
+    weight = torch.ones(1, 2, 2)
+
+    loss, stats = strong_view_consistency_loss(logits_a, logits_b, mask=mask, weight=weight)
+
+    assert torch.isfinite(loss)
+    assert float(loss.detach()) > 0.0
+    assert stats["strong_view_consistency_mask_ratio"] == 0.25
+    loss.backward()
+    assert logits_a.grad is not None
+    assert logits_b.grad is not None
+
+
+def test_strong_view_consistency_loss_empty_mask_is_zero():
+    logits_a = torch.randn(1, 3, 2, 2, requires_grad=True)
+    logits_b = torch.randn(1, 3, 2, 2, requires_grad=True)
+    mask = torch.zeros(1, 2, 2, dtype=torch.bool)
+
+    loss, stats = strong_view_consistency_loss(logits_a, logits_b, mask=mask)
+
+    assert float(loss.detach()) == 0.0
+    assert stats["strong_view_consistency_mask_ratio"] == 0.0

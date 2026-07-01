@@ -35,6 +35,7 @@ from r6.engine.evaluator import evaluate
 from r6.engine.logger import OneLineProgress, append_jsonl, setup_logger
 from r6.engine.model_factory import build_deploy_model
 from r6.losses.boundary_losses import boundary_bce_loss
+from r6.losses.consistency import strong_view_consistency_loss
 from r6.losses.foreground_safe_kd import (
     foreground_safe_sam_consistency_loss,
     foreground_safe_sam_kd_loss,
@@ -1086,6 +1087,7 @@ class SAGESAMR6Trainer:
             loss_corr = x_l.new_tensor(0.0)
             loss_local = x_l.new_tensor(0.0)
             loss_conflict = x_l.new_tensor(0.0)
+            loss_strong_consistency = x_l.new_tensor(0.0)
             sam_kd_gate_ratio = 0.0
             sam_kd_gate_weight_mean = 0.0
             sam_agreement_gate_ratio = 0.0
@@ -1164,6 +1166,31 @@ class SAGESAMR6Trainer:
                 self._dual_consistency_loss(out_s1, targets) + self._dual_consistency_loss(out_s2, targets)
             )
             ramp = min(1.0, iteration / max(1, int(self.config["train"].get("unsup_ramp_iterations", 1))))
+            strong_consistency_cfg = self.config.get("losses", {}).get("strong_view_consistency", {})
+            strong_consistency_stats = {
+                "strong_view_consistency_mask_ratio": 0.0,
+                "strong_view_consistency_weight_mean": 0.0,
+            }
+            if bool(strong_consistency_cfg.get("enabled", False)) and iteration >= int(strong_consistency_cfg.get("start_iter", 0)):
+                foreground_candidate = targets["candidate_set"][:, 1:].any(dim=1) if self.num_classes > 1 else targets["ambiguous_mask"].bool()
+                consistency_mask = (
+                    targets["singleton_mask"].bool()
+                    | targets["ambiguous_mask"].bool()
+                    | targets["conflict_mask"].bool()
+                    | foreground_candidate
+                    | targets.get("sam_structure_support_mask", targets["ambiguous_mask"]).bool()
+                )
+                consistency_weight = torch.maximum(
+                    targets.get("candidate_weight", consistency_mask.float()).float(),
+                    targets.get("structure_weight", consistency_mask.float()).float(),
+                )
+                loss_strong_consistency, strong_consistency_stats = strong_view_consistency_loss(
+                    out_s1["logits"],
+                    out_s2["logits"],
+                    mask=consistency_mask,
+                    weight=consistency_weight,
+                    temperature=float(strong_consistency_cfg.get("temperature", 1.0)),
+                )
             if copy_paste_should_run:
                 cp_ramp_denom = max(1, int(copy_paste_cfg.get("ramp_iterations", self.config["train"].get("unsup_ramp_iterations", 1))))
                 cp_ramp = min(1.0, max(0, iteration - int(copy_paste_cfg.get("start_iter", 0)) + 1) / cp_ramp_denom)
@@ -1208,6 +1235,7 @@ class SAGESAMR6Trainer:
                 + pseudo_cfg.get("negative_weight", 0.1) * (ssl1["loss_negative"] + ssl2["loss_negative"]) * 0.5
                 + pseudo_cfg.get("fuzzy_weight", 0.25) * (ssl1["loss_fuzzy"] + ssl2["loss_fuzzy"]) * 0.5
                 + float(loss_cfg.get("branch_ssl_weight", 0.5)) * branch_ssl
+                + float(strong_consistency_cfg.get("weight", 0.0)) * loss_strong_consistency
             )
             if stage_weights["locality"] > 0.0 and float(pseudo_cfg.get("locality_weight", 0.0)) > 0.0:
                 locality_cfg = self.config.get("locality", {})
@@ -1402,6 +1430,7 @@ class SAGESAMR6Trainer:
             "loss_fuzzy": float(ssl1["loss_fuzzy"].detach()),
             "loss_branch_ssl": float(branch_ssl.detach()),
             "loss_conflict_review": float(loss_conflict.detach()),
+            "loss_strong_consistency": float(loss_strong_consistency.detach()),
             "loss_correlation": float(loss_corr.detach()),
             "loss_locality": float(loss_local.detach()),
             "masked_locality_ratio": float(masked_locality_stats["masked_locality_ratio"]),
@@ -1449,6 +1478,7 @@ class SAGESAMR6Trainer:
             "gpu_mem_mb": float(torch.cuda.max_memory_allocated() / 1024 / 1024) if self.device.type == "cuda" else 0.0,
             **prompt_stats,
             **sup_weight_logs,
+            **strong_consistency_stats,
             **trust_logs,
             **prior_feedback_logs,
             **prior_feedback_loss_stats,

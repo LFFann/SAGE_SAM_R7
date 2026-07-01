@@ -74,6 +74,10 @@ changes the semi-supervised loop:
     SAM boundary supervision on unlabeled images. This makes SAM contribute
     primarily as a structural/shape prior while labeled masks keep the boundary
     target stable.
+18. R7.15 adds gated strong-view perturbation consistency. Two intensity-strong
+    unlabeled views are required to agree only inside candidate or structural
+    regions, borrowing the weak-to-strong/dual-view idea from UniMatch while
+    preserving R7's SAM verifier and prior-feedback safety gates.
 
 V100 training:
 
@@ -128,6 +132,8 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `class_balanced_ce_weight_class1`
 - `class_balanced_ce_weight_class2`
 - `loss_sup_boundary`
+- `loss_strong_consistency`
+- `strong_view_consistency_mask_ratio`
 - `sam_verifier_score_mean`
 - `sam_prompt_valid_mean`
 - `sam_prompt_box_area_ratio_mean`
