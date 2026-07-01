@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import yaml
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent
@@ -57,7 +58,29 @@ def parse_args():
     p.add_argument("--amp", action="store_true")
     p.add_argument("--no-amp", action="store_true")
     p.add_argument("--seed", type=int)
+    p.add_argument(
+        "--opts",
+        nargs="*",
+        default=[],
+        help="Override config values as KEY VALUE pairs, e.g. --opts sam.use_sam false losses.strong_view_consistency.enabled false.",
+    )
     return p.parse_args()
+
+
+def _parse_override_value(value: str):
+    parsed = yaml.safe_load(value)
+    return value if parsed is None and value.lower() not in {"null", "~"} else parsed
+
+
+def apply_cli_overrides(config: dict, opts: list[str]):
+    if not opts:
+        return
+    if len(opts) % 2 != 0:
+        raise ValueError("--opts expects KEY VALUE pairs")
+    for key, value in zip(opts[0::2], opts[1::2]):
+        if not key or key.startswith("-"):
+            raise ValueError(f"Invalid --opts key: {key!r}")
+        set_nested(config, key, _parse_override_value(value))
 
 
 def main():
@@ -86,6 +109,7 @@ def main():
         set_nested(config, "experiment.seed", args.seed)
     if args.max_iterations is not None:
         set_nested(config, "train.max_iterations", args.max_iterations)
+    apply_cli_overrides(config, args.opts)
     seed_everything(config["experiment"].get("seed", 2026), config["experiment"].get("deterministic", False))
     data_root = Path(config["data"]["root"])
     if config["data"].get("synthetic", False) and not data_root.exists():

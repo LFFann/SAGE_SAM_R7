@@ -167,10 +167,17 @@ def test_v100_launch_scripts_are_parameterized():
 def test_r7_launch_scripts_are_parameterized():
     train_script = (ROOT / "scripts/train_r7_v100_tuned.sh").read_text(encoding="utf-8")
     test_script = (ROOT / "scripts/test_r7_v100_tuned.sh").read_text(encoding="utf-8")
+    ablate_script = (ROOT / "scripts/ablate_r7_v100.sh").read_text(encoding="utf-8")
 
     assert "configs/r7_3class_v100_tuned.yaml" in train_script
     assert "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP" in train_script
     assert "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP" in test_script
+    assert "ABLATIONS=" in ablate_script
+    assert "no_sam" in ablate_script
+    assert "prior_feedback.enabled false" in ablate_script
+    assert "copy_paste.enabled false" in ablate_script
+    assert "losses.strong_view_consistency.enabled false" in ablate_script
+    assert "losses.class_balanced_ce.enabled false" in ablate_script
     assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
     assert "validate_r7.py" in test_script
     assert "test_r7.py" in test_script

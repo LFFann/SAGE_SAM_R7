@@ -92,10 +92,30 @@ MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_B
   bash scripts/train_r7_v100_tuned.sh
 ```
 
+Temporary config overrides:
+
+```bash
+python train_r7.py --config configs/r7_3class_v100_tuned.yaml \
+  --output-dir outputs/pilot_no_copy_paste \
+  --max-iterations 2000 \
+  --opts copy_paste.enabled false
+```
+
 Validation and test:
 
 ```bash
 bash scripts/test_r7_v100_tuned.sh
+```
+
+Core ablation suite:
+
+```bash
+# Run all default ablations. Override MAX_ITERATIONS for shorter pilot runs.
+MAX_ITERATIONS=8000 bash scripts/ablate_r7_v100.sh
+
+# Example pilot: only full vs no SAM vs no prior feedback.
+MAX_ITERATIONS=2000 ABLATIONS="full no_sam no_prior_feedback" \
+  bash scripts/ablate_r7_v100.sh
 ```
 
 Compare the new run with prior R7 outputs:
