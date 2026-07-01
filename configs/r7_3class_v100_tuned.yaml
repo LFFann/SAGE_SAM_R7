@@ -1,6 +1,6 @@
 experiment:
-  name: SAGE_SAM_R7_3Class_V100_Tuned_SAMAgreeKD
-  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMAgreeKD
+  name: SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback
+  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback
   seed: 2026
   deterministic: false
 
@@ -110,7 +110,7 @@ sam:
     sam_extent_weight: 0.00
     sam_extent_target_mix: 0.70
     sam_kd_min_effective_weight: 0.00025
-    sam_kd_min_effective_after: 1500
+    sam_kd_min_effective_after: 1200
     sam_kd_min_effective_gate_ratio: 0.004
     sam_agreement_weight: 0.035
     sam_agreement_min_support: 0.06
@@ -123,14 +123,14 @@ sam:
     sam_relation_weight: 0.00
 
 r6:
-  foreground_grounding_start: 1500
+  foreground_grounding_start: 1200
   correlation_locality_start: 4500
   self_reliance_start: 6000
   disable_background_unsup_until: 2400
   min_fast_slow_agreement: 0.12
   low_agreement_unsup_scale: 0.15
-  stage1_unsup_max_scale: 0.10
-  stage1_sam_max_scale: 0.06
+  stage1_unsup_max_scale: 0.18
+  stage1_sam_max_scale: 0.08
   self_reliance_ssl_scale: 0.35
 
 trust:
@@ -167,6 +167,29 @@ trust:
   unsafe_negative_scale: 0.0
   disable_correlation_when_unsafe: true
   disable_locality_when_unsafe: true
+
+prior_feedback:
+  enabled: true
+  start_iter: 1200
+  ema_decay: 0.90
+  use_ema: true
+  monitor_temperature: 0.70
+  loss_temperature: 0.70
+  loss_weight: 0.06
+  min_class_prior_multiplier: 0.45
+  max_class_prior_multiplier: [0.0, 1.25, 1.15]
+  min_foreground_prior_multiplier: 0.45
+  max_foreground_prior_multiplier: 1.22
+  min_class_foreground_floor: 0.0010
+  max_class_foreground_floor: 0.0
+  min_foreground_floor: 0.0045
+  max_foreground_floor: 0.0
+  over_weight: 1.0
+  under_weight: 0.12
+  drift_scale_strength: 3.0
+  min_unsup_scale: 0.45
+  sam_scale_coupling: 0.35
+  min_sam_scale: 0.70
 
 calibration:
   alpha: 0.05

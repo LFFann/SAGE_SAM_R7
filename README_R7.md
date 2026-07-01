@@ -51,6 +51,16 @@ changes the semi-supervised loop:
     can supervise the student even when the EMA teacher is empty or lagging, but
     only if SAM support is high and the student either agrees with SAM's
     foreground class or is still uncertain.
+13. R7.10 adds student prior feedback. The unlabeled weak-view student
+    foreground distribution is tracked with EMA and compared with the labeled
+    anatomical class prior. When student foreground mass over-expands, the
+    non-SAM unsupervised branch is automatically down-scaled and a light
+    hinge-style prior feedback loss penalizes anatomically implausible area
+    drift without using validation labels.
+14. R7.11 restores earlier weak-to-strong learning under the prior-feedback
+    guard. Foreground SSL starts at 1200 iterations, stage-1 unsupervised
+    scaling is less conservative, and SAM agreement KD can become active in
+    the same window where earlier R7 runs reached their best validation Dice.
 
 V100 training:
 
@@ -61,7 +71,7 @@ bash scripts/train_r7_v100_tuned.sh
 Resume or shorten:
 
 ```bash
-MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMAgreeKD/checkpoints/latest.pth \
+MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback/checkpoints/latest.pth \
   bash scripts/train_r7_v100_tuned.sh
 ```
 
@@ -69,6 +79,15 @@ Validation and test:
 
 ```bash
 bash scripts/test_r7_v100_tuned.sh
+```
+
+Compare the new run with prior R7 outputs:
+
+```bash
+python tools/compare_r7_runs.py \
+  outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback \
+  outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMAgreeKD \
+  outputs/SAGE_SAM_R7_3Class_V100_Tuned
 ```
 
 Key diagnostics to watch in `metrics.jsonl`:
@@ -83,6 +102,12 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `trust_high_candidate`
 - `trust_high_class`
 - `trust_min_candidate_foreground_ratio`
+- `prior_feedback_drift`
+- `prior_feedback_unsup_scale`
+- `prior_feedback_sam_scale`
+- `loss_prior_feedback`
+- `prior_feedback_student_fg_ratio`
+- `prior_feedback_fg_over`
 - `sam_verifier_score_mean`
 - `sam_prompt_valid_mean`
 - `sam_prompt_box_area_ratio_mean`

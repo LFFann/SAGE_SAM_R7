@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 
 from r6.losses.foreground_safe_kd import sam_guided_extent_kd_loss, student_anchored_sam_agreement_loss
+from r6.losses.prior_feedback import student_prior_feedback_loss
 from r6.losses.set_valued_losses import rank_margin_loss, safe_negative_loss, set_cross_entropy_loss, singleton_ce_loss
 
 
@@ -90,3 +91,57 @@ def test_student_anchored_sam_agreement_loss_ignores_unsupported_sam():
 
     assert float(loss.detach()) == 0.0
     assert stats["sam_agreement_gate_ratio"] == 0.0
+
+
+def test_student_prior_feedback_loss_is_zero_inside_prior_band():
+    prior = torch.tensor([0.9900, 0.0060, 0.0040])
+    logits = prior.log().view(1, 3, 1, 1).expand(1, 3, 4, 4).clone().requires_grad_(True)
+
+    loss, stats = student_prior_feedback_loss(
+        logits,
+        prior,
+        foreground_classes=[1, 2],
+        min_class_multiplier=0.45,
+        max_class_multiplier=1.25,
+    )
+
+    assert float(loss.detach()) == 0.0
+    assert stats["prior_feedback_loss_active"] == 0.0
+
+
+def test_student_prior_feedback_loss_penalizes_foreground_overexpansion():
+    prior = torch.tensor([0.9900, 0.0060, 0.0040])
+    logits = torch.zeros(1, 3, 4, 4, requires_grad=True)
+    logits.data[:, 1] = 4.0
+
+    loss, stats = student_prior_feedback_loss(
+        logits,
+        prior,
+        foreground_classes=[1, 2],
+        min_class_multiplier=0.45,
+        max_class_multiplier=1.25,
+    )
+
+    assert torch.isfinite(loss)
+    assert float(loss.detach()) > 0.0
+    assert stats["prior_feedback_over_class1"] > 0.0
+    loss.backward()
+    assert logits.grad is not None
+    assert logits.grad[:, 1].mean() > 0.0
+
+
+def test_student_prior_feedback_loss_supports_class_specific_upper_bounds():
+    prior = torch.tensor([0.9900, 0.0060, 0.0040])
+    logits = prior.log().view(1, 3, 1, 1).expand(1, 3, 4, 4).clone().requires_grad_(True)
+    logits.data[:, 2] += 4.00
+
+    loss, stats = student_prior_feedback_loss(
+        logits,
+        prior,
+        foreground_classes=[1, 2],
+        max_class_multiplier=[0.0, 1.25, 1.02],
+        temperature=0.70,
+    )
+
+    assert torch.isfinite(loss)
+    assert stats["prior_feedback_over_class2"] > 0.0

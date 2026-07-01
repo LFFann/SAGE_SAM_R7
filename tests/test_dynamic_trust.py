@@ -179,3 +179,43 @@ def test_dynamic_trust_scales_sam_when_support_is_low_even_without_overgate():
     assert logs["trust_sam_overgate"] == 0.0
     assert weights["unsup"] == 1.0
     assert weights["sam"] == 0.10
+
+
+def test_student_prior_feedback_downscales_unsup_when_student_foreground_drifts():
+    trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
+    trainer.num_classes = 3
+    trainer.student_prior_ema = None
+    trainer.config = {
+        "pseudo": {
+            "foreground_classes": [1, 2],
+            "labeled_class_prior": [0.9900, 0.0060, 0.0040],
+        },
+        "prior_feedback": {
+            "enabled": True,
+            "start_iter": 1500,
+            "ema_decay": 0.0,
+            "max_class_prior_multiplier": 1.25,
+            "max_foreground_prior_multiplier": 1.25,
+            "min_class_prior_multiplier": 0.45,
+            "min_unsup_scale": 0.45,
+            "drift_scale_strength": 3.0,
+            "sam_scale_coupling": 0.35,
+            "min_sam_scale": 0.70,
+        },
+    }
+    prob = torch.zeros(2, 3, 4, 4)
+    prob[:, 0] = 0.96
+    prob[:, 1] = 0.03
+    prob[:, 2] = 0.01
+
+    weights, logs = trainer._apply_student_prior_feedback(
+        2000,
+        prob,
+        {"unsup": 1.0, "sam": 1.0, "correlation": 1.0, "locality": 1.0},
+    )
+
+    assert logs["prior_feedback_active"] == 1.0
+    assert logs["prior_feedback_drift"] > 0.0
+    assert weights["unsup"] < 1.0
+    assert weights["sam"] < 1.0
+    assert weights["correlation"] == weights["unsup"]

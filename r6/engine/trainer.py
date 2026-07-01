@@ -41,6 +41,7 @@ from r6.losses.foreground_safe_kd import (
     sam_guided_extent_kd_loss,
     student_anchored_sam_agreement_loss,
 )
+from r6.losses.prior_feedback import student_prior_feedback_loss
 from r6.losses.sam_adapter_losses import sam_ce_dice_loss
 from r6.losses.tri_state_pseudo_loss import tri_state_pseudo_supervision_loss
 from r6.losses.supervised import supervised_loss
@@ -202,6 +203,7 @@ class SAGESAMR6Trainer:
         self.calibration_update_count = 0
         self.val_collapse_count = 0
         self.stop_requested = False
+        self.student_prior_ema = None
         diag_cfg = config.get("diagnostics", {})
         self.train_visualize_every = int(diag_cfg.get("train_visualize_every", 0))
         self.train_visualize_max_samples = max(1, int(diag_cfg.get("train_visualize_max_samples", 1)))
@@ -563,6 +565,8 @@ class SAGESAMR6Trainer:
                 last_val_metrics = {
                     "val_dice": metrics.get("avg_dice"),
                     "best_dice": metrics.get("best_dice", self.best_metrics.get("avg_dice")),
+                    "c1_pg": metrics.get("class_1_pred_to_gt_ratio"),
+                    "c2_pg": metrics.get("class_2_pred_to_gt_ratio"),
                     "val_iou": metrics.get("avg_iou"),
                     "val_hd95": metrics.get("avg_hd95"),
                 }
@@ -748,6 +752,123 @@ class SAGESAMR6Trainer:
             "trust_negative_scale": trust_negative_scale,
         }
 
+    def _apply_student_prior_feedback(self, iteration: int, student_prob: torch.Tensor | None, stage_weights: dict):
+        cfg = self.config.get("prior_feedback", {})
+        logs = {
+            "prior_feedback_active": 0.0,
+            "prior_feedback_drift": 0.0,
+            "prior_feedback_unsup_scale": 1.0,
+            "prior_feedback_sam_scale": 1.0,
+            "prior_feedback_student_fg_ratio": 0.0,
+            "prior_feedback_target_fg_ratio": 0.0,
+            "prior_feedback_fg_over": 0.0,
+            "prior_feedback_class_over_max": 0.0,
+            "prior_feedback_class_under_max": 0.0,
+        }
+        if not bool(cfg.get("enabled", False)) or student_prob is None:
+            return stage_weights, logs
+        start_iter = int(cfg.get("start_iter", 0))
+        if iteration < start_iter:
+            return stage_weights, logs
+        prior_value = self.config.get("pseudo", {}).get("labeled_class_prior")
+        if prior_value is None:
+            return stage_weights, logs
+
+        monitor_prob = student_prob.detach().clamp_min(1e-6)
+        monitor_temp = float(cfg.get("monitor_temperature", 1.0))
+        if monitor_temp > 0.0 and abs(monitor_temp - 1.0) > 1e-6:
+            monitor_prob = monitor_prob.pow(1.0 / monitor_temp)
+            monitor_prob = monitor_prob / monitor_prob.sum(dim=1, keepdim=True).clamp_min(1e-6)
+        prob_mean = monitor_prob.mean(dim=(0, 2, 3))
+        if prob_mean.numel() != self.num_classes:
+            return stage_weights, logs
+        prior = torch.as_tensor(prior_value, device=prob_mean.device, dtype=prob_mean.dtype)
+        if prior.numel() != self.num_classes:
+            return stage_weights, logs
+        prior = prior.clamp_min(1e-6)
+        prior = prior / prior.sum().clamp_min(1e-6)
+
+        decay = float(cfg.get("ema_decay", 0.90))
+        if self.student_prior_ema is None or self.student_prior_ema.numel() != prob_mean.numel():
+            self.student_prior_ema = prob_mean.detach()
+        else:
+            self.student_prior_ema = (decay * self.student_prior_ema.to(prob_mean.device) + (1.0 - decay) * prob_mean).detach()
+        monitor = self.student_prior_ema if bool(cfg.get("use_ema", True)) else prob_mean
+
+        fg_classes = [
+            int(c)
+            for c in self.config.get("pseudo", {}).get("foreground_classes", list(range(1, self.num_classes)))
+            if 0 < int(c) < self.num_classes
+        ]
+        if not fg_classes:
+            return stage_weights, logs
+
+        class_over = []
+        class_under = []
+        for cls in fg_classes:
+            max_multiplier = self._class_trust_value(cfg, "max_class_prior_multiplier", cls, 1.25)
+            min_multiplier = self._class_trust_value(cfg, "min_class_prior_multiplier", cls, 0.45)
+            max_floor = self._class_trust_value(cfg, "max_class_foreground_floor", cls, 0.0)
+            min_floor = self._class_trust_value(cfg, "min_class_foreground_floor", cls, 0.0)
+            lower = torch.clamp(prior[cls] * min_multiplier, min=min_floor)
+            upper = torch.clamp(prior[cls] * max_multiplier, min=max_floor)
+            upper = torch.maximum(upper, lower + 1e-6)
+            over = torch.relu(monitor[cls] - upper) / upper.clamp_min(1e-6)
+            under = torch.relu(lower - monitor[cls]) / lower.clamp_min(1e-6)
+            class_over.append(over)
+            class_under.append(under)
+            logs[f"prior_feedback_student_ratio_class{cls}"] = float(monitor[cls])
+            logs[f"prior_feedback_prior_class{cls}"] = float(prior[cls])
+            logs[f"prior_feedback_upper_class{cls}"] = float(upper)
+            logs[f"prior_feedback_lower_class{cls}"] = float(lower)
+            logs[f"prior_feedback_over_class{cls}"] = float(over)
+            logs[f"prior_feedback_under_class{cls}"] = float(under)
+
+        fg_ratio = monitor[fg_classes].sum()
+        target_fg = prior[fg_classes].sum()
+        fg_upper = torch.clamp(target_fg * float(cfg.get("max_foreground_prior_multiplier", max_multiplier)), min=float(cfg.get("max_foreground_floor", 0.0)))
+        fg_lower = torch.clamp(target_fg * float(cfg.get("min_foreground_prior_multiplier", min_multiplier)), min=float(cfg.get("min_foreground_floor", 0.0)))
+        fg_upper = torch.maximum(fg_upper, fg_lower + 1e-6)
+        fg_over = torch.relu(fg_ratio - fg_upper) / fg_upper.clamp_min(1e-6)
+        fg_under = torch.relu(fg_lower - fg_ratio) / fg_lower.clamp_min(1e-6)
+        class_over_max = torch.stack(class_over).max() if class_over else fg_over.new_tensor(0.0)
+        class_under_max = torch.stack(class_under).max() if class_under else fg_under
+        drift = torch.maximum(fg_over, class_over_max)
+
+        strength = float(cfg.get("drift_scale_strength", 3.0))
+        min_unsup_scale = float(cfg.get("min_unsup_scale", 0.45))
+        unsup_scale = 1.0
+        if float(drift) > 0.0:
+            unsup_scale = max(min_unsup_scale, 1.0 / (1.0 + strength * float(drift)))
+        sam_coupling = float(cfg.get("sam_scale_coupling", 0.35))
+        min_sam_scale = float(cfg.get("min_sam_scale", 0.70))
+        sam_scale = max(min_sam_scale, 1.0 - (1.0 - unsup_scale) * sam_coupling)
+
+        out_weights = dict(stage_weights)
+        if float(drift) > 0.0:
+            out_weights["unsup"] = float(out_weights.get("unsup", 0.0)) * unsup_scale
+            out_weights["correlation"] = float(out_weights.get("correlation", 0.0)) * unsup_scale
+            out_weights["locality"] = float(out_weights.get("locality", 0.0)) * unsup_scale
+            out_weights["sam"] = float(out_weights.get("sam", 0.0)) * sam_scale
+
+        logs.update(
+            {
+                "prior_feedback_active": 1.0,
+                "prior_feedback_drift": float(drift),
+                "prior_feedback_unsup_scale": float(unsup_scale),
+                "prior_feedback_sam_scale": float(sam_scale),
+                "prior_feedback_student_fg_ratio": float(fg_ratio),
+                "prior_feedback_target_fg_ratio": float(target_fg),
+                "prior_feedback_fg_upper": float(fg_upper),
+                "prior_feedback_fg_lower": float(fg_lower),
+                "prior_feedback_fg_over": float(fg_over),
+                "prior_feedback_fg_under": float(fg_under),
+                "prior_feedback_class_over_max": float(class_over_max),
+                "prior_feedback_class_under_max": float(class_under_max),
+            }
+        )
+        return out_weights, logs
+
     @staticmethod
     def _class_trust_value(config: dict, key: str, cls: int, default: float) -> float:
         value = config.get(key, default)
@@ -910,6 +1031,7 @@ class SAGESAMR6Trainer:
             loss_kd = x_l.new_tensor(0.0)
             loss_sam_extent = x_l.new_tensor(0.0)
             loss_sam_agreement = x_l.new_tensor(0.0)
+            loss_prior_feedback = x_l.new_tensor(0.0)
             loss_relation = x_l.new_tensor(0.0)
             loss_boundary = x_l.new_tensor(0.0)
             loss_corr = x_l.new_tensor(0.0)
@@ -922,6 +1044,8 @@ class SAGESAMR6Trainer:
             sam_agreement_effective_weight = 0.0
             sam_agreement_floor_active = False
             masked_locality_stats = {"masked_locality_ratio": 0.0, "foreground_masked_ratio": 0.0}
+            prior_feedback_effective_weight = 0.0
+            prior_feedback_loss_stats = {}
             if self.use_sam and self.mentor is not None:
                 sam_l = self.mentor.forward_labeled(x_l, y_l)
                 loss_sam_sup = sam_ce_dice_loss(sam_l["sam_prob"], y_l, self.num_classes, self.ignore_index)
@@ -929,6 +1053,7 @@ class SAGESAMR6Trainer:
 
             targets = build_foreground_safe_targets(teacher_out, sam_u, self.calibrator, pseudo_runtime_cfg)
             targets, stage_weights, trust_logs = self._apply_dynamic_trust(iteration, targets, stage_weights)
+            stage_weights, prior_feedback_logs = self._apply_student_prior_feedback(iteration, student_w_prob, stage_weights)
             out_s1 = self.student(x_u_s1, return_features=True)
             out_s2 = self.student(x_u_s2, return_features=True, feature_dropout="complementary")
             if stage_weights["correlation"] > 0.0 and float(pseudo_cfg.get("correlation_weight", 0.0)) > 0.0 and out_s1.get("fusion_feature") is not None:
@@ -958,6 +1083,39 @@ class SAGESAMR6Trainer:
                 self._dual_consistency_loss(out_s1, targets) + self._dual_consistency_loss(out_s2, targets)
             )
             ramp = min(1.0, iteration / max(1, int(self.config["train"].get("unsup_ramp_iterations", 1))))
+            prior_feedback_cfg = self.config.get("prior_feedback", {})
+            if (
+                bool(prior_feedback_cfg.get("enabled", False))
+                and iteration >= int(prior_feedback_cfg.get("start_iter", 0))
+                and self.config.get("pseudo", {}).get("labeled_class_prior") is not None
+            ):
+                prior_loss_1, prior_stats_1 = student_prior_feedback_loss(
+                    out_s1["logits"],
+                    self.config["pseudo"]["labeled_class_prior"],
+                    foreground_classes=self.config.get("pseudo", {}).get("foreground_classes"),
+                    min_class_multiplier=float(prior_feedback_cfg.get("min_class_prior_multiplier", 0.45)),
+                    max_class_multiplier=float(prior_feedback_cfg.get("max_class_prior_multiplier", 1.25)),
+                    min_class_floor=float(prior_feedback_cfg.get("min_class_foreground_floor", 0.0)),
+                    max_class_floor=float(prior_feedback_cfg.get("max_class_foreground_floor", 0.0)),
+                    over_weight=float(prior_feedback_cfg.get("over_weight", 1.0)),
+                    under_weight=float(prior_feedback_cfg.get("under_weight", 0.15)),
+                    temperature=float(prior_feedback_cfg.get("loss_temperature", 1.0)),
+                )
+                prior_loss_2, _ = student_prior_feedback_loss(
+                    out_s2["logits"],
+                    self.config["pseudo"]["labeled_class_prior"],
+                    foreground_classes=self.config.get("pseudo", {}).get("foreground_classes"),
+                    min_class_multiplier=float(prior_feedback_cfg.get("min_class_prior_multiplier", 0.45)),
+                    max_class_multiplier=float(prior_feedback_cfg.get("max_class_prior_multiplier", 1.25)),
+                    min_class_floor=float(prior_feedback_cfg.get("min_class_foreground_floor", 0.0)),
+                    max_class_floor=float(prior_feedback_cfg.get("max_class_foreground_floor", 0.0)),
+                    over_weight=float(prior_feedback_cfg.get("over_weight", 1.0)),
+                    under_weight=float(prior_feedback_cfg.get("under_weight", 0.15)),
+                    temperature=float(prior_feedback_cfg.get("loss_temperature", 1.0)),
+                )
+                loss_prior_feedback = 0.5 * (prior_loss_1 + prior_loss_2)
+                prior_feedback_loss_stats = prior_stats_1
+                prior_feedback_effective_weight = ramp * float(prior_feedback_cfg.get("loss_weight", 0.0))
             loss_unsup = (
                 pseudo_cfg.get("singleton_weight", 1.0) * (ssl1["loss_singleton"] + ssl2["loss_singleton"]) * 0.5
                 + pseudo_cfg.get("set_weight", 0.5) * (ssl1["loss_set"] + ssl2["loss_set"]) * 0.5
@@ -1119,6 +1277,7 @@ class SAGESAMR6Trainer:
                 + sam_aux_effective_scale * sam_aux_loss
                 + sam_kd_effective_weight * loss_kd
                 + sam_agreement_effective_weight * loss_sam_agreement
+                + prior_feedback_effective_weight * loss_prior_feedback
             )
 
         sam_grad_norm = 0.0
@@ -1167,6 +1326,7 @@ class SAGESAMR6Trainer:
             "loss_sam_kd": float(loss_kd.detach()),
             "loss_sam_extent": float(loss_sam_extent.detach()),
             "loss_sam_agreement": float(loss_sam_agreement.detach()),
+            "loss_prior_feedback": float(loss_prior_feedback.detach()),
             "loss_sam_sem": float(loss_kd.detach()),
             "unsup_weight": ramp,
             "r6_unsup_scale": float(unsup_scale),
@@ -1183,6 +1343,7 @@ class SAGESAMR6Trainer:
             "sam_agreement_weight_mean": float(sam_agreement_weight_mean),
             "sam_agreement_effective_weight": float(sam_agreement_effective_weight),
             "sam_agreement_floor_active": 1.0 if sam_agreement_floor_active else 0.0,
+            "prior_feedback_effective_weight": float(prior_feedback_effective_weight),
             "sam_utility_ema": float(self.sam_utility.utility_ema),
             "sam_utility_disabled": 1.0 if self.sam_utility.disabled else 0.0,
             "fast_slow_agreement": float(teacher_out["agreement"].detach()),
@@ -1198,6 +1359,8 @@ class SAGESAMR6Trainer:
             "gpu_mem_mb": float(torch.cuda.max_memory_allocated() / 1024 / 1024) if self.device.type == "cuda" else 0.0,
             **prompt_stats,
             **trust_logs,
+            **prior_feedback_logs,
+            **prior_feedback_loss_stats,
             **targets["stats"],
             **sup_logs,
         }
@@ -1436,10 +1599,15 @@ class SAGESAMR6Trainer:
         row = {"iteration": iteration, "phase": "val", **metrics}
         append_jsonl(self.output_dir / "metrics.jsonl", row)
         self.logger.info(
-            "val iter=%d avg_dice=%.4f best_dice=%.4f avg_iou=%.4f",
+            "val iter=%d avg_dice=%.4f best_dice=%.4f gap=%.4f avg_iou=%.4f c1_pg=%.3f c2_pg=%.3f fg_pred=%.4f fg_gt=%.4f",
             iteration,
             metrics["avg_dice"],
             best_dice,
+            float(metrics.get("baseline_gap_avg_dice", float("nan"))),
             metrics["avg_iou"],
+            float(metrics.get("class_1_pred_to_gt_ratio", float("nan"))),
+            float(metrics.get("class_2_pred_to_gt_ratio", float("nan"))),
+            float(metrics.get("foreground_pred_ratio", float("nan"))),
+            float(metrics.get("foreground_gt_ratio", float("nan"))),
         )
         return metrics

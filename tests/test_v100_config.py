@@ -38,7 +38,7 @@ def test_v100_tuned_config_matches_server_defaults():
 def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     cfg = load_yaml(ROOT / "configs/r7_3class_v100_tuned.yaml")
 
-    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_SAMAgreeKD"
+    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback"
     assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
     assert cfg["train"]["lr_schedule"] == "cosine"
     assert cfg["train"]["lr_decay_start_iteration"] <= 750
@@ -95,7 +95,7 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["sam"]["losses"]["sam_extent_weight"] == 0.0
     assert 0.50 <= cfg["sam"]["losses"]["sam_extent_target_mix"] <= 0.75
     assert 0.0 < cfg["sam"]["losses"]["sam_kd_min_effective_weight"] <= 0.00025
-    assert cfg["sam"]["losses"]["sam_kd_min_effective_after"] >= 1500
+    assert cfg["sam"]["losses"]["sam_kd_min_effective_after"] >= 1200
     assert cfg["sam"]["losses"]["sam_kd_min_effective_gate_ratio"] >= 0.004
     assert 0.0 < cfg["sam"]["losses"]["sam_agreement_weight"] <= 0.04
     assert cfg["sam"]["losses"]["sam_agreement_min_support"] <= 0.06
@@ -118,9 +118,19 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["trust"]["max_pre_ceiling_foreground_ratio"][1] <= 0.12
     assert cfg["trust"]["enabled"] is True
     assert cfg["trust"]["disable_correlation_when_unsafe"] is True
+    assert cfg["prior_feedback"]["enabled"] is True
+    assert cfg["prior_feedback"]["start_iter"] >= 1200
+    assert 0.0 < cfg["prior_feedback"]["loss_weight"] <= 0.10
+    assert max(cfg["prior_feedback"]["max_class_prior_multiplier"][1:]) <= 1.25
+    assert cfg["prior_feedback"]["max_class_prior_multiplier"][2] <= 1.15
+    assert cfg["prior_feedback"]["max_foreground_prior_multiplier"] <= 1.22
+    assert 0.5 <= cfg["prior_feedback"]["monitor_temperature"] <= 1.0
+    assert 0.5 <= cfg["prior_feedback"]["loss_temperature"] <= 1.0
+    assert cfg["prior_feedback"]["min_unsup_scale"] >= 0.40
+    assert cfg["prior_feedback"]["min_sam_scale"] >= 0.70
     assert 1200 <= cfg["r6"]["foreground_grounding_start"] <= 1600
-    assert cfg["r6"]["stage1_unsup_max_scale"] <= 0.10
-    assert cfg["r6"]["stage1_sam_max_scale"] <= 0.06
+    assert 0.10 < cfg["r6"]["stage1_unsup_max_scale"] <= 0.20
+    assert 0.06 < cfg["r6"]["stage1_sam_max_scale"] <= 0.10
     assert cfg["eval"]["baseline"]["avg_dice"] > 0.760
     assert cfg["diagnostics"]["train_visualize_every"] == 250
 
@@ -147,7 +157,8 @@ def test_r7_launch_scripts_are_parameterized():
     test_script = (ROOT / "scripts/test_r7_v100_tuned.sh").read_text(encoding="utf-8")
 
     assert "configs/r7_3class_v100_tuned.yaml" in train_script
-    assert "SAGE_SAM_R7_3Class_V100_Tuned_SAMAgreeKD" in train_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback" in train_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback" in test_script
     assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
     assert "validate_r7.py" in test_script
     assert "test_r7.py" in test_script
