@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import torch
 
+from r6.losses.boundary_losses import boundary_bce_loss
 from r6.losses.foreground_safe_kd import sam_guided_extent_kd_loss, student_anchored_sam_agreement_loss
 from r6.losses.prior_feedback import student_prior_feedback_loss
 from r6.losses.set_valued_losses import rank_margin_loss, safe_negative_loss, set_cross_entropy_loss, singleton_ce_loss
 from r6.losses.supervised import supervised_loss
+from r6.ssl.boundary_targets import build_boundary_target
 
 
 def test_singleton_empty_mask_no_nan():
@@ -157,5 +159,32 @@ def test_supervised_loss_accepts_class_weights():
 
     assert torch.isfinite(loss)
     assert stats["loss_sup_ce"] > 0.0
+    loss.backward()
+    assert logits.grad is not None
+
+
+def test_boundary_target_and_bce_are_single_channel_and_trainable():
+    mask = torch.zeros(1, 4, 4, dtype=torch.long)
+    mask[:, 1:3, 1:3] = 2
+    boundary = build_boundary_target(mask)
+    logits = torch.zeros(1, 1, 4, 4, requires_grad=True)
+
+    loss = boundary_bce_loss(logits, boundary)
+
+    assert boundary.shape == (1, 1, 4, 4)
+    assert boundary.max() > 0
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert logits.grad is not None
+
+
+def test_boundary_bce_collapses_multichannel_target_for_single_head():
+    logits = torch.zeros(1, 1, 4, 4, requires_grad=True)
+    target = torch.zeros(1, 3, 4, 4)
+    target[:, 2, 1:3, 1:3] = 1.0
+
+    loss = boundary_bce_loss(logits, target)
+
+    assert torch.isfinite(loss)
     loss.backward()
     assert logits.grad is not None

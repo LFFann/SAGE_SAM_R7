@@ -65,6 +65,7 @@ def _window_summary(rows: list[dict[str, Any]], lo: int, hi: int) -> dict[str, A
         "class_balanced_ce_active",
         "class_balanced_ce_weight_class1",
         "class_balanced_ce_weight_class2",
+        "loss_sup_boundary",
         "loss_sam_kd",
         "sam_adapter_grad_norm",
         "prompt_quality",

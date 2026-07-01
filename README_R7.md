@@ -70,6 +70,10 @@ changes the semi-supervised loop:
     copy-paste losses only. Background CE is down-weighted and foreground CE is
     mildly rebalanced from labeled class priors, improving the rarer class-2
     gradient without amplifying noisy pseudo labels.
+17. R7.14 anchors the boundary head with labeled GT boundaries before using
+    SAM boundary supervision on unlabeled images. This makes SAM contribute
+    primarily as a structural/shape prior while labeled masks keep the boundary
+    target stable.
 
 V100 training:
 
@@ -123,6 +127,7 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `copy_paste_fg_ratio`
 - `class_balanced_ce_weight_class1`
 - `class_balanced_ce_weight_class2`
+- `loss_sup_boundary`
 - `sam_verifier_score_mean`
 - `sam_prompt_valid_mean`
 - `sam_prompt_box_area_ratio_mean`

@@ -27,6 +27,7 @@ DEFAULT_FIELDS = [
     "loss_copy_paste",
     "class_balanced_ce_weight_class1",
     "class_balanced_ce_weight_class2",
+    "loss_sup_boundary",
     "sam_kd_effective_weight",
     "loss_sam_kd",
     "trust_unsafe",

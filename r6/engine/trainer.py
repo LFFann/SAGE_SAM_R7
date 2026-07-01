@@ -50,6 +50,7 @@ from r6.models.promptable_sam_mentor import PromptableSAMMentor
 from r6.models.real_sam_wrapper import RealSAMWrapper
 from r6.ssl.adaptive_ultrasound_augmentation import make_weak_strong_views
 from r6.ssl.anatomical_copy_paste import build_labeled_foreground_copy_paste
+from r6.ssl.boundary_targets import build_boundary_target
 from r6.ssl.foreground_correlation_locality import (
     build_foreground_structure_mask,
     build_masked_locality_view,
@@ -1068,6 +1069,10 @@ class SAGESAMR6Trainer:
                 loss_sup = fusion_sup_weight * loss_sup_fusion + branch_sup_weight * 0.5 * (loss_sup_a + loss_sup_b)
             else:
                 loss_sup = loss_sup_fusion
+            loss_sup_boundary = x_l.new_tensor(0.0)
+            if out_l.get("boundary_logits") is not None:
+                boundary_target_l = build_boundary_target(y_l).to(device=out_l["boundary_logits"].device)
+                loss_sup_boundary = boundary_bce_loss(out_l["boundary_logits"], boundary_target_l)
 
             loss_sam_sup = x_l.new_tensor(0.0)
             loss_sam_unsup = x_l.new_tensor(0.0)
@@ -1352,6 +1357,7 @@ class SAGESAMR6Trainer:
             )
             loss = (
                 loss_sup
+                + float(loss_cfg.get("supervised_boundary_weight", 0.0)) * loss_sup_boundary
                 + sam_sup_scale * sam_loss_cfg.get("sam_sup_weight", self.config.get("sam", {}).get("sam_sup_weight", 0.5)) * loss_sam_sup
                 + unsup_scale * non_sam_unsup_loss
                 + sam_aux_effective_scale * sam_aux_loss
@@ -1402,6 +1408,7 @@ class SAGESAMR6Trainer:
             "foreground_masked_ratio": float(masked_locality_stats["foreground_masked_ratio"]),
             "loss_relation": float(loss_relation.detach()),
             "loss_boundary": float(loss_boundary.detach()),
+            "loss_sup_boundary": float(loss_sup_boundary.detach()),
             "loss_sam_sup": float(loss_sam_sup.detach()),
             "loss_sam_unsup": float(loss_sam_unsup.detach()),
             "loss_sam_kd": float(loss_kd.detach()),
