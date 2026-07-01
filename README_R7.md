@@ -108,6 +108,11 @@ python tools/compare_r7_runs.py \
   outputs/SAGE_SAM_R7_3Class_V100_Tuned
 ```
 
+The comparison report includes `verdict`, `recommended_next_action`,
+class-wise baseline gaps, `stable_within_drop_threshold`, and
+`mechanism_coverage` flags so a new V100 run can be judged without manually
+re-reading all metric curves.
+
 Key diagnostics to watch in `metrics.jsonl`:
 
 - `per_class_foreground_participation_ratio`

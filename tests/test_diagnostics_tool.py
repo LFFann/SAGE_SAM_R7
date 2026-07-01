@@ -143,3 +143,40 @@ def test_compare_r7_runs_flags_late_overexpansion_and_ssl_starvation(tmp_path):
     assert "class1_overexpansion" in run["blockers"]
     assert "class1_dice_collapse" in run["blockers"]
     assert "best_before_effective_ssl" in run["blockers"]
+    assert run["verdict"] == "ssl_not_contributing_to_peak"
+    assert report["best_run_verdict"] == "ssl_not_contributing_to_peak"
+
+
+def test_compare_r7_runs_reports_class2_below_baseline_verdict(tmp_path):
+    output = tmp_path / "run_b"
+    output.mkdir()
+    rows = [
+        {"iteration": 100, "phase": "train", "r6_unsup_scale": 0.02, "sam_train_gate_ratio": 0.02},
+        {
+            "iteration": 250,
+            "phase": "val",
+            "avg_dice": 0.755,
+            "class_dice": [0.99, 0.73, 0.78],
+            "class_1_pred_to_gt_ratio": 1.05,
+            "class_2_pred_to_gt_ratio": 1.08,
+        },
+        {"iteration": 500, "phase": "train", "r6_unsup_scale": 0.03, "sam_train_gate_ratio": 0.02},
+        {
+            "iteration": 500,
+            "phase": "val",
+            "avg_dice": 0.752,
+            "class_dice": [0.99, 0.72, 0.784],
+            "class_1_pred_to_gt_ratio": 1.04,
+            "class_2_pred_to_gt_ratio": 1.10,
+        },
+    ]
+    with (output / "metrics.jsonl").open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    report = compare_runs([output], baseline_avg_dice=0.7601364254951477)
+    run = report["runs"][0]
+
+    assert "class2_below_baseline" in run["blockers"]
+    assert run["c2_best_baseline_gap"] < 0
+    assert run["verdict"] == "class2_quality_limited"
