@@ -110,6 +110,13 @@ changes the semi-supervised loop:
     ambiguous supervision. SAM-supported foreground singletons keep stronger
     weight, so SAM contributes as a reliability assessor instead of a dense
     noisy teacher.
+25. R7.22 adds adaptive labeled-foreground replay. The BCP-style copy-paste
+    branch now starts before pseudo-label SSL and boosts its weight when
+    class-wise pseudo foreground participation is below anatomical coverage
+    floors. This targets the repeated "best before effective SSL" pattern by
+    giving the student earlier ground-truth foreground supervision inside
+    unlabeled ultrasound contexts, while the boost decays once the risky
+    pseudo-label phase takes over.
 
 V100 training:
 
@@ -208,6 +215,10 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `prior_feedback_fg_over`
 - `loss_copy_paste`
 - `copy_paste_effective_weight`
+- `copy_paste_base_weight`
+- `copy_paste_coverage_boost`
+- `copy_paste_coverage_deficit`
+- `copy_paste_effective_cap`
 - `copy_paste_fg_ratio`
 - `class_balanced_ce_weight_class1`
 - `class_balanced_ce_weight_class2`

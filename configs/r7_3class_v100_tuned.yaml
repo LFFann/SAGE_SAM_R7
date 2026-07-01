@@ -202,12 +202,20 @@ prior_feedback:
 
 copy_paste:
   enabled: true
-  start_iter: 1200
+  start_iter: 800
   weight: 0.12
-  ramp_iterations: 1200
+  ramp_iterations: 600
+  max_effective_weight: 0.16
   interval: 1
   min_foreground_ratio: 0.0005
   max_foreground_ratio: 0.060
+  coverage_boost:
+    enabled: true
+    start_iter: 800
+    min_class_ratio: [0.0, 0.0040, 0.0030]
+    max_boost: 1.45
+    decay_start_iter: 2800
+    decay_iterations: 2200
 
 calibration:
   alpha: 0.05

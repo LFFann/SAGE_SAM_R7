@@ -51,7 +51,7 @@ from r6.models.dual_temporal_teacher import DualTemporalTeacher
 from r6.models.promptable_sam_mentor import PromptableSAMMentor
 from r6.models.real_sam_wrapper import RealSAMWrapper
 from r6.ssl.adaptive_ultrasound_augmentation import make_weak_strong_views
-from r6.ssl.anatomical_copy_paste import build_labeled_foreground_copy_paste
+from r6.ssl.anatomical_copy_paste import build_labeled_foreground_copy_paste, copy_paste_replay_weight
 from r6.ssl.boundary_targets import build_boundary_target
 from r6.ssl.foreground_correlation_locality import (
     build_foreground_structure_mask,
@@ -1270,6 +1270,12 @@ class SAGESAMR6Trainer:
                 "copy_paste_fg_ratio": 0.0,
                 "copy_paste_kept_samples": 0.0,
             }
+            copy_paste_weight_logs = {
+                "copy_paste_base_weight": 0.0,
+                "copy_paste_coverage_boost": 1.0,
+                "copy_paste_coverage_deficit": 0.0,
+                "copy_paste_effective_cap": float(self.config.get("copy_paste", {}).get("max_effective_weight", 0.0)),
+            }
             prototype_anchor_effective_weight = 0.0
             prototype_anchor_stats = {
                 "prototype_anchor_active": 0.0,
@@ -1394,9 +1400,12 @@ class SAGESAMR6Trainer:
                     temperature=float(strong_consistency_cfg.get("temperature", 1.0)),
                 )
             if copy_paste_should_run:
-                cp_ramp_denom = max(1, int(copy_paste_cfg.get("ramp_iterations", self.config["train"].get("unsup_ramp_iterations", 1))))
-                cp_ramp = min(1.0, max(0, iteration - int(copy_paste_cfg.get("start_iter", 0)) + 1) / cp_ramp_denom)
-                copy_paste_effective_weight = cp_ramp * float(copy_paste_cfg.get("weight", 0.0))
+                copy_paste_effective_weight, copy_paste_weight_logs = copy_paste_replay_weight(
+                    iteration,
+                    copy_paste_cfg,
+                    targets.get("stats", {}),
+                    foreground_classes=self.config.get("pseudo", {}).get("foreground_classes"),
+                )
             prior_feedback_cfg = self.config.get("prior_feedback", {})
             if (
                 bool(prior_feedback_cfg.get("enabled", False))
@@ -1742,6 +1751,7 @@ class SAGESAMR6Trainer:
             **prior_feedback_logs,
             **prior_feedback_loss_stats,
             **copy_paste_stats,
+            **copy_paste_weight_logs,
             **prototype_anchor_stats,
             **targets["stats"],
             **sup_logs,
