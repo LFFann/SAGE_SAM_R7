@@ -145,6 +145,26 @@ class-wise baseline gaps, `stable_within_drop_threshold`, and
 `mechanism_coverage` flags so a new V100 run can be judged without manually
 re-reading all metric curves.
 
+Rank the training signals that are most associated with validation Dice drops:
+
+```bash
+python tools/diagnose_val_dice_drivers.py \
+  outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP \
+  outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMAgreeKD \
+  outputs/SAGE_SAM_R7_3Class_V100_Tuned \
+  --report outputs/r7_val_dice_driver_report.json
+```
+
+For mechanism attribution, run the default V100 ablation suite:
+
+```bash
+bash scripts/ablate_r7_v100.sh
+```
+
+It includes `no_sam`, `no_prior_feedback`, `no_copy_paste`,
+`no_strong_consistency`, `no_topology_filter`, `no_prompt_consistency`,
+`no_eval_topology`, `no_boundary`, and `no_class_balance`.
+
 Key diagnostics to watch in `metrics.jsonl`:
 
 - `per_class_foreground_participation_ratio`

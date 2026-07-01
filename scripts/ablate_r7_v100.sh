@@ -12,7 +12,7 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:128
 CONFIG="${CONFIG:-configs/r7_3class_v100_tuned.yaml}"
 BASE_OUTPUT_DIR="${BASE_OUTPUT_DIR:-outputs/ablations_r7}"
 MAX_ITERATIONS="${MAX_ITERATIONS:-8000}"
-ABLATIONS="${ABLATIONS:-full no_sam no_prior_feedback no_copy_paste no_strong_consistency no_boundary no_class_balance}"
+ABLATIONS="${ABLATIONS:-full no_sam no_prior_feedback no_copy_paste no_strong_consistency no_topology_filter no_prompt_consistency no_eval_topology no_boundary no_class_balance}"
 
 python tools/validate_dataset.py --config "${CONFIG}"
 
@@ -38,6 +38,18 @@ for name in ${ABLATIONS}; do
     no_strong_consistency)
       python tools/verify_real_sam.py --config "${CONFIG}"
       args+=(--opts losses.strong_view_consistency.enabled false)
+      ;;
+    no_topology_filter)
+      python tools/verify_real_sam.py --config "${CONFIG}"
+      args+=(--opts pseudo.topology_candidate_filter_enabled false)
+      ;;
+    no_prompt_consistency)
+      python tools/verify_real_sam.py --config "${CONFIG}"
+      args+=(--opts sam.losses.prompt_consistency_weight 0.0)
+      ;;
+    no_eval_topology)
+      python tools/verify_real_sam.py --config "${CONFIG}"
+      args+=(--opts eval.topology_postprocess.enabled false)
       ;;
     no_boundary)
       python tools/verify_real_sam.py --config "${CONFIG}"

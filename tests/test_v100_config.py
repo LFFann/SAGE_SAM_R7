@@ -189,6 +189,9 @@ def test_r7_launch_scripts_are_parameterized():
     assert "prior_feedback.enabled false" in ablate_script
     assert "copy_paste.enabled false" in ablate_script
     assert "losses.strong_view_consistency.enabled false" in ablate_script
+    assert "pseudo.topology_candidate_filter_enabled false" in ablate_script
+    assert "sam.losses.prompt_consistency_weight 0.0" in ablate_script
+    assert "eval.topology_postprocess.enabled false" in ablate_script
     assert "losses.class_balanced_ce.enabled false" in ablate_script
     assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
     assert "validate_r7.py" in test_script

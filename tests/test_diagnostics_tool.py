@@ -8,6 +8,7 @@ from pathlib import Path
 from tools.check_r6_diagnostics import evaluate_diagnostics, load_metric_rows
 from tools.analyze_r7_run import analyze
 from tools.compare_r7_runs import compare_runs
+from tools.diagnose_val_dice_drivers import diagnose
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -180,3 +181,66 @@ def test_compare_r7_runs_reports_class2_below_baseline_verdict(tmp_path):
     assert "class2_below_baseline" in run["blockers"]
     assert run["c2_best_baseline_gap"] < 0
     assert run["verdict"] == "class2_quality_limited"
+
+
+def test_diagnose_val_dice_drivers_ranks_decline_signal(tmp_path):
+    output = tmp_path / "driver_run"
+    output.mkdir()
+    rows = [
+        {"iteration": 100, "phase": "train", "candidate_foreground_ratio": 0.01, "trust_unsafe": 0.0},
+        {"iteration": 100, "phase": "val", "avg_dice": 0.78},
+        {"iteration": 200, "phase": "train", "candidate_foreground_ratio": 0.03, "trust_unsafe": 0.0},
+        {"iteration": 200, "phase": "val", "avg_dice": 0.74},
+        {"iteration": 300, "phase": "train", "candidate_foreground_ratio": 0.06, "trust_unsafe": 1.0},
+        {"iteration": 300, "phase": "val", "avg_dice": 0.68},
+        {"iteration": 400, "phase": "train", "candidate_foreground_ratio": 0.08, "trust_unsafe": 1.0},
+        {"iteration": 400, "phase": "val", "avg_dice": 0.62},
+    ]
+    with (output / "metrics.jsonl").open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    report = diagnose([output], radius=25)
+    drivers = {item["field"]: item for item in report["drivers"]}
+
+    assert report["num_pairs"] == 4
+    assert "avg_dice" not in drivers
+    assert drivers["candidate_foreground_ratio"]["corr_with_val_dice"] < -0.95
+    assert drivers["candidate_foreground_ratio"]["corr_with_drop_from_best"] > 0.95
+    assert drivers["candidate_foreground_ratio"]["note"] == "higher_when_val_dice_drops"
+
+
+def test_diagnose_val_dice_drivers_cli_writes_report(tmp_path):
+    output = tmp_path / "driver_cli_run"
+    output.mkdir()
+    report_path = tmp_path / "driver_report.json"
+    rows = [
+        {"iteration": 100, "phase": "train", "candidate_foreground_ratio": 0.01},
+        {"iteration": 100, "phase": "val", "avg_dice": 0.78},
+        {"iteration": 200, "phase": "train", "candidate_foreground_ratio": 0.03},
+        {"iteration": 200, "phase": "val", "avg_dice": 0.74},
+        {"iteration": 300, "phase": "train", "candidate_foreground_ratio": 0.06},
+        {"iteration": 300, "phase": "val", "avg_dice": 0.68},
+    ]
+    with (output / "metrics.jsonl").open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/diagnose_val_dice_drivers.py",
+            str(output),
+            "--report",
+            str(report_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert '"num_pairs": 3' in result.stdout
+    assert report_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["num_pairs"] == 3
