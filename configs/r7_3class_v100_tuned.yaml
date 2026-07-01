@@ -318,6 +318,13 @@ losses:
   branch_ssl_weight: 0.5
   conflict_review_weight: 0.2
   fusion_sup_weight: 1.0
+  class_balanced_ce:
+    enabled: true
+    background_weight: 0.25
+    foreground_scale: 1.15
+    foreground_power: 0.50
+    min_foreground_weight: 0.90
+    max_foreground_weight: 1.35
 
 structure:
   use_online_relation: false

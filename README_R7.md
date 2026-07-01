@@ -66,6 +66,10 @@ changes the semi-supervised loop:
     after SSL starts, and only the pasted foreground pixels are supervised.
     This keeps rare foreground semantics visible during unlabeled training
     without converting SAM or teacher mistakes into dense hard labels.
+16. R7.13 adds labeled-prior class-balanced CE for supervised and anatomical
+    copy-paste losses only. Background CE is down-weighted and foreground CE is
+    mildly rebalanced from labeled class priors, improving the rarer class-2
+    gradient without amplifying noisy pseudo labels.
 
 V100 training:
 
@@ -117,6 +121,8 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `loss_copy_paste`
 - `copy_paste_effective_weight`
 - `copy_paste_fg_ratio`
+- `class_balanced_ce_weight_class1`
+- `class_balanced_ce_weight_class2`
 - `sam_verifier_score_mean`
 - `sam_prompt_valid_mean`
 - `sam_prompt_box_area_ratio_mean`

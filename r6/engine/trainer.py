@@ -870,6 +870,41 @@ class SAGESAMR6Trainer:
         )
         return out_weights, logs
 
+    def _supervised_class_weights(self, device, dtype):
+        cfg = self.config.get("losses", {}).get("class_balanced_ce", {})
+        logs = {"class_balanced_ce_active": 0.0}
+        if not bool(cfg.get("enabled", False)):
+            return None, logs
+        prior_value = self.config.get("pseudo", {}).get("labeled_class_prior")
+        if prior_value is None:
+            return None, logs
+        prior = torch.as_tensor(prior_value, device=device, dtype=dtype)
+        if prior.numel() != self.num_classes:
+            return None, logs
+        eps = float(cfg.get("eps", 1e-6))
+        prior = prior.clamp_min(eps)
+        fg_classes = [
+            int(c)
+            for c in self.config.get("pseudo", {}).get("foreground_classes", list(range(1, self.num_classes)))
+            if 0 < int(c) < self.num_classes
+        ]
+        weights = torch.ones(self.num_classes, device=device, dtype=dtype)
+        weights[0] = float(cfg.get("background_weight", 1.0))
+        if fg_classes:
+            fg_prior = prior[fg_classes]
+            reference = fg_prior.mean().clamp_min(eps)
+            power = float(cfg.get("foreground_power", 0.5))
+            scale = float(cfg.get("foreground_scale", 1.0))
+            min_w = float(cfg.get("min_foreground_weight", 0.0))
+            max_w = float(cfg.get("max_foreground_weight", 10.0))
+            for cls in fg_classes:
+                weight = scale * torch.pow(reference / prior[cls], power)
+                weights[cls] = torch.clamp(weight, min=min_w, max=max_w)
+        logs["class_balanced_ce_active"] = 1.0
+        for cls in range(self.num_classes):
+            logs[f"class_balanced_ce_weight_class{cls}"] = float(weights[cls].detach())
+        return weights, logs
+
     @staticmethod
     def _class_trust_value(config: dict, key: str, cls: int, default: float) -> float:
         value = config.get(key, default)
@@ -1016,9 +1051,16 @@ class SAGESAMR6Trainer:
         sam_u = {"valid": False}
         with amp_autocast(self.device.type, self.amp):
             out_l = self.student(x_l, return_features=True)
-            loss_sup_fusion, sup_logs = supervised_loss(out_l["logits"], y_l, self.num_classes, self.ignore_index)
-            loss_sup_a = self._supervised_branch_loss(out_l, "logits_a", y_l)
-            loss_sup_b = self._supervised_branch_loss(out_l, "logits_b", y_l)
+            sup_class_weights, sup_weight_logs = self._supervised_class_weights(out_l["logits"].device, out_l["logits"].dtype)
+            loss_sup_fusion, sup_logs = supervised_loss(
+                out_l["logits"],
+                y_l,
+                self.num_classes,
+                self.ignore_index,
+                class_weights=sup_class_weights,
+            )
+            loss_sup_a = self._supervised_branch_loss(out_l, "logits_a", y_l, sup_class_weights)
+            loss_sup_b = self._supervised_branch_loss(out_l, "logits_b", y_l, sup_class_weights)
             loss_cfg = self.config.get("losses", {})
             branch_sup_weight = float(loss_cfg.get("branch_sup_weight", 0.5))
             fusion_sup_weight = float(loss_cfg.get("fusion_sup_weight", 1.0))
@@ -1083,7 +1125,13 @@ class SAGESAMR6Trainer:
                 )
                 if bool(mask_cp.any()):
                     logits_cp = self.student(mixed_cp)
-                    loss_copy_paste, _ = supervised_loss(logits_cp, target_cp, self.num_classes, self.ignore_index)
+                    loss_copy_paste, _ = supervised_loss(
+                        logits_cp,
+                        target_cp,
+                        self.num_classes,
+                        self.ignore_index,
+                        class_weights=sup_class_weights,
+                    )
             if stage_weights["correlation"] > 0.0 and float(pseudo_cfg.get("correlation_weight", 0.0)) > 0.0 and out_s1.get("fusion_feature") is not None:
                 sam_shape = targets.get("sam_boundary")
                 if sam_shape is None and sam_u.get("valid"):
@@ -1393,6 +1441,7 @@ class SAGESAMR6Trainer:
             "lr_scale": lr_scale,
             "gpu_mem_mb": float(torch.cuda.max_memory_allocated() / 1024 / 1024) if self.device.type == "cuda" else 0.0,
             **prompt_stats,
+            **sup_weight_logs,
             **trust_logs,
             **prior_feedback_logs,
             **prior_feedback_loss_stats,
@@ -1412,10 +1461,10 @@ class SAGESAMR6Trainer:
             logs["train_visualization"] = visual_path
         return logs
 
-    def _supervised_branch_loss(self, out: dict, key: str, target: torch.Tensor):
+    def _supervised_branch_loss(self, out: dict, key: str, target: torch.Tensor, class_weights: torch.Tensor | None = None):
         if key not in out:
             return out["logits"].new_tensor(0.0)
-        loss, _ = supervised_loss(out[key], target, self.num_classes, self.ignore_index)
+        loss, _ = supervised_loss(out[key], target, self.num_classes, self.ignore_index, class_weights=class_weights)
         return loss
 
     def _branch_ssl_loss(self, out_s1: dict, out_s2: dict, targets: dict, pseudo_cfg: dict):

@@ -219,3 +219,31 @@ def test_student_prior_feedback_downscales_unsup_when_student_foreground_drifts(
     assert weights["unsup"] < 1.0
     assert weights["sam"] < 1.0
     assert weights["correlation"] == weights["unsup"]
+
+
+def test_supervised_class_weights_use_labeled_prior_without_pseudo_labels():
+    trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
+    trainer.num_classes = 3
+    trainer.config = {
+        "pseudo": {
+            "foreground_classes": [1, 2],
+            "labeled_class_prior": [0.9900, 0.0060, 0.0040],
+        },
+        "losses": {
+            "class_balanced_ce": {
+                "enabled": True,
+                "background_weight": 0.25,
+                "foreground_scale": 1.15,
+                "foreground_power": 0.5,
+                "min_foreground_weight": 0.90,
+                "max_foreground_weight": 1.35,
+            }
+        },
+    }
+
+    weights, logs = trainer._supervised_class_weights(torch.device("cpu"), torch.float32)
+
+    assert logs["class_balanced_ce_active"] == 1.0
+    assert float(weights[0]) == 0.25
+    assert float(weights[2]) > float(weights[1])
+    assert float(weights[2]) <= 1.35

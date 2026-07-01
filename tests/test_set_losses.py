@@ -5,6 +5,7 @@ import torch
 from r6.losses.foreground_safe_kd import sam_guided_extent_kd_loss, student_anchored_sam_agreement_loss
 from r6.losses.prior_feedback import student_prior_feedback_loss
 from r6.losses.set_valued_losses import rank_margin_loss, safe_negative_loss, set_cross_entropy_loss, singleton_ce_loss
+from r6.losses.supervised import supervised_loss
 
 
 def test_singleton_empty_mask_no_nan():
@@ -145,3 +146,16 @@ def test_student_prior_feedback_loss_supports_class_specific_upper_bounds():
 
     assert torch.isfinite(loss)
     assert stats["prior_feedback_over_class2"] > 0.0
+
+
+def test_supervised_loss_accepts_class_weights():
+    logits = torch.zeros(1, 3, 2, 2, requires_grad=True)
+    target = torch.tensor([[[0, 1], [2, 2]]])
+    weights = torch.tensor([0.25, 1.0, 1.3])
+
+    loss, stats = supervised_loss(logits, target, num_classes=3, class_weights=weights)
+
+    assert torch.isfinite(loss)
+    assert stats["loss_sup_ce"] > 0.0
+    loss.backward()
+    assert logits.grad is not None

@@ -25,6 +25,8 @@ DEFAULT_FIELDS = [
     "copy_paste_effective_weight",
     "copy_paste_fg_ratio",
     "loss_copy_paste",
+    "class_balanced_ce_weight_class1",
+    "class_balanced_ce_weight_class2",
     "sam_kd_effective_weight",
     "loss_sam_kd",
     "trust_unsafe",

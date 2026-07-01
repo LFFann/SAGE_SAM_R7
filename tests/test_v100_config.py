@@ -132,6 +132,10 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["copy_paste"]["start_iter"] >= cfg["r6"]["foreground_grounding_start"]
     assert 0.0 < cfg["copy_paste"]["weight"] <= 0.15
     assert cfg["copy_paste"]["max_foreground_ratio"] <= 0.06
+    assert cfg["losses"]["class_balanced_ce"]["enabled"] is True
+    assert cfg["losses"]["class_balanced_ce"]["background_weight"] <= 0.30
+    assert cfg["losses"]["class_balanced_ce"]["foreground_scale"] <= 1.20
+    assert cfg["losses"]["class_balanced_ce"]["max_foreground_weight"] <= 1.35
     assert 1200 <= cfg["r6"]["foreground_grounding_start"] <= 1600
     assert 0.10 < cfg["r6"]["stage1_unsup_max_scale"] <= 0.20
     assert 0.06 < cfg["r6"]["stage1_sam_max_scale"] <= 0.10
