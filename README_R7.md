@@ -129,6 +129,11 @@ changes the semi-supervised loop:
     classes, especially class-2. This keeps early foreground replay from being
     limited by small-batch class absence and strengthens the rare-class route
     without adding model parameters or trusting extra pseudo labels.
+28. R7.25 makes foreground replay batch-size safe. Labeled source batches are
+    now repeated or trimmed inside the copy-paste operator to match the current
+    unlabeled batch, so replay pool batch size, loader tail batches, and
+    labeled/unlabeled loader imbalance no longer interrupt training when the
+    anatomical copy-paste branch starts.
 
 V100 training:
 
@@ -248,6 +253,9 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `copy_paste_replay_pool_class1`
 - `copy_paste_replay_pool_class2`
 - `copy_paste_fg_ratio`
+- `copy_paste_source_batch_size`
+- `copy_paste_target_batch_size`
+- `copy_paste_source_repeated`
 - `class_balanced_ce_weight_class1`
 - `class_balanced_ce_weight_class2`
 - `loss_sup_boundary`

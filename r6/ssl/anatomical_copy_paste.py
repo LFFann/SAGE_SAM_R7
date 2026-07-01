@@ -78,6 +78,22 @@ def _foreground_mask(mask: torch.Tensor, foreground_classes: list[int], ignore_i
     return fg & valid
 
 
+def _match_source_batch(
+    labeled_image: torch.Tensor,
+    labeled_mask: torch.Tensor,
+    target_batch_size: int,
+) -> tuple[torch.Tensor, torch.Tensor, float]:
+    """Repeat or trim source foreground samples to match the unlabeled batch."""
+    source_batch_size = int(labeled_image.shape[0])
+    if source_batch_size <= 0:
+        raise ValueError("labeled_image must contain at least one source sample")
+    if source_batch_size == int(target_batch_size):
+        return labeled_image, labeled_mask, 0.0
+
+    indices = torch.arange(int(target_batch_size), device=labeled_image.device) % source_batch_size
+    return labeled_image.index_select(0, indices), labeled_mask.index_select(0, indices), 1.0
+
+
 def build_labeled_foreground_copy_paste(
     labeled_image: torch.Tensor,
     labeled_mask: torch.Tensor,
@@ -93,9 +109,16 @@ def build_labeled_foreground_copy_paste(
     unlabeled context stay ignored, so this branch anchors rare foreground
     semantics without turning unlabeled background into hard negatives.
     """
-    if labeled_image.shape != unlabeled_image.shape:
+    source_batch_size = int(labeled_image.shape[0])
+    target_batch_size = int(unlabeled_image.shape[0])
+    if labeled_image.ndim != 4 or unlabeled_image.ndim != 4:
         raise ValueError(
-            "labeled_image and unlabeled_image must share BCHW shape, "
+            "labeled_image and unlabeled_image must be BCHW tensors, "
+            f"got {tuple(labeled_image.shape)} and {tuple(unlabeled_image.shape)}"
+        )
+    if labeled_image.shape[1:] != unlabeled_image.shape[1:]:
+        raise ValueError(
+            "labeled_image and unlabeled_image must share CHW shape, "
             f"got {tuple(labeled_image.shape)} and {tuple(unlabeled_image.shape)}"
         )
     if labeled_mask.shape != labeled_image.shape[:1] + labeled_image.shape[-2:]:
@@ -103,6 +126,7 @@ def build_labeled_foreground_copy_paste(
             "labeled_mask must share BHW with labeled_image, "
             f"got {tuple(labeled_mask.shape)} for image {tuple(labeled_image.shape)}"
         )
+    labeled_image, labeled_mask, source_repeated = _match_source_batch(labeled_image, labeled_mask, target_batch_size)
 
     if foreground_classes is None:
         valid_labels = torch.unique(labeled_mask[labeled_mask != int(ignore_index)])
@@ -128,6 +152,9 @@ def build_labeled_foreground_copy_paste(
         "copy_paste_active": 1.0 if bool(paste_mask.any()) else 0.0,
         "copy_paste_fg_ratio": float(paste_mask.float().mean().detach()),
         "copy_paste_kept_samples": float(keep.float().sum().detach()),
+        "copy_paste_source_batch_size": float(source_batch_size),
+        "copy_paste_target_batch_size": float(target_batch_size),
+        "copy_paste_source_repeated": float(source_repeated),
         **class_ratios,
     }
     return mixed, target, paste_mask, stats

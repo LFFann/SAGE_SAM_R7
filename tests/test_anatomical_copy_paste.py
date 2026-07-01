@@ -52,6 +52,35 @@ def test_labeled_foreground_copy_paste_respects_area_bounds():
     assert stats["copy_paste_active"] == 0.0
 
 
+def test_labeled_foreground_copy_paste_repeats_source_batch_to_unlabeled_batch():
+    labeled = torch.zeros(2, 3, 4, 4)
+    unlabeled = torch.ones(4, 3, 4, 4)
+    mask = torch.zeros(2, 4, 4, dtype=torch.long)
+    mask[0, 1:3, 1:3] = 1
+    mask[1, 2:4, 2:4] = 2
+    labeled[0, :, 1:3, 1:3] = 0.4
+    labeled[1, :, 2:4, 2:4] = 0.8
+
+    mixed, target, paste_mask, stats = build_labeled_foreground_copy_paste(
+        labeled,
+        mask,
+        unlabeled,
+        foreground_classes=[1, 2],
+        ignore_index=255,
+    )
+
+    assert mixed.shape == unlabeled.shape
+    assert target.shape == (4, 4, 4)
+    assert paste_mask.shape == (4, 4, 4)
+    assert stats["copy_paste_source_batch_size"] == 2.0
+    assert stats["copy_paste_target_batch_size"] == 4.0
+    assert stats["copy_paste_source_repeated"] == 1.0
+    assert int((target == 1).sum().item()) == 8
+    assert int((target == 2).sum().item()) == 8
+    assert torch.allclose(mixed[2], mixed[0])
+    assert torch.allclose(mixed[3], mixed[1])
+
+
 def test_copy_paste_replay_weight_boosts_when_foreground_coverage_is_low():
     weight, logs = copy_paste_replay_weight(
         1000,
