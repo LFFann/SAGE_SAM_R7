@@ -38,7 +38,7 @@ def test_v100_tuned_config_matches_server_defaults():
 def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     cfg = load_yaml(ROOT / "configs/r7_3class_v100_tuned.yaml")
 
-    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback"
+    assert cfg["experiment"]["name"] == "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP"
     assert cfg["data"]["root"] == "/root/autodl-tmp/echoData"
     assert cfg["train"]["lr_schedule"] == "cosine"
     assert cfg["train"]["lr_decay_start_iteration"] <= 750
@@ -128,6 +128,10 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert 0.5 <= cfg["prior_feedback"]["loss_temperature"] <= 1.0
     assert cfg["prior_feedback"]["min_unsup_scale"] >= 0.40
     assert cfg["prior_feedback"]["min_sam_scale"] >= 0.70
+    assert cfg["copy_paste"]["enabled"] is True
+    assert cfg["copy_paste"]["start_iter"] >= cfg["r6"]["foreground_grounding_start"]
+    assert 0.0 < cfg["copy_paste"]["weight"] <= 0.15
+    assert cfg["copy_paste"]["max_foreground_ratio"] <= 0.06
     assert 1200 <= cfg["r6"]["foreground_grounding_start"] <= 1600
     assert 0.10 < cfg["r6"]["stage1_unsup_max_scale"] <= 0.20
     assert 0.06 < cfg["r6"]["stage1_sam_max_scale"] <= 0.10
@@ -157,8 +161,8 @@ def test_r7_launch_scripts_are_parameterized():
     test_script = (ROOT / "scripts/test_r7_v100_tuned.sh").read_text(encoding="utf-8")
 
     assert "configs/r7_3class_v100_tuned.yaml" in train_script
-    assert "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback" in train_script
-    assert "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback" in test_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP" in train_script
+    assert "SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP" in test_script
     assert 'python train_r7.py "${train_args[@]}" "$@"' in train_script
     assert "validate_r7.py" in test_script
     assert "test_r7.py" in test_script

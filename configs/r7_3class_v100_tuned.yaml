@@ -1,6 +1,6 @@
 experiment:
-  name: SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback
-  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback
+  name: SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP
+  output_dir: outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP
   seed: 2026
   deterministic: false
 
@@ -190,6 +190,15 @@ prior_feedback:
   min_unsup_scale: 0.45
   sam_scale_coupling: 0.35
   min_sam_scale: 0.70
+
+copy_paste:
+  enabled: true
+  start_iter: 1200
+  weight: 0.12
+  ramp_iterations: 1200
+  interval: 1
+  min_foreground_ratio: 0.0005
+  max_foreground_ratio: 0.060
 
 calibration:
   alpha: 0.05

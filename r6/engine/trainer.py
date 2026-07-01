@@ -49,6 +49,7 @@ from r6.models.dual_temporal_teacher import DualTemporalTeacher
 from r6.models.promptable_sam_mentor import PromptableSAMMentor
 from r6.models.real_sam_wrapper import RealSAMWrapper
 from r6.ssl.adaptive_ultrasound_augmentation import make_weak_strong_views
+from r6.ssl.anatomical_copy_paste import build_labeled_foreground_copy_paste
 from r6.ssl.foreground_correlation_locality import (
     build_foreground_structure_mask,
     build_masked_locality_view,
@@ -1032,6 +1033,7 @@ class SAGESAMR6Trainer:
             loss_sam_extent = x_l.new_tensor(0.0)
             loss_sam_agreement = x_l.new_tensor(0.0)
             loss_prior_feedback = x_l.new_tensor(0.0)
+            loss_copy_paste = x_l.new_tensor(0.0)
             loss_relation = x_l.new_tensor(0.0)
             loss_boundary = x_l.new_tensor(0.0)
             loss_corr = x_l.new_tensor(0.0)
@@ -1046,6 +1048,12 @@ class SAGESAMR6Trainer:
             masked_locality_stats = {"masked_locality_ratio": 0.0, "foreground_masked_ratio": 0.0}
             prior_feedback_effective_weight = 0.0
             prior_feedback_loss_stats = {}
+            copy_paste_effective_weight = 0.0
+            copy_paste_stats = {
+                "copy_paste_active": 0.0,
+                "copy_paste_fg_ratio": 0.0,
+                "copy_paste_kept_samples": 0.0,
+            }
             if self.use_sam and self.mentor is not None:
                 sam_l = self.mentor.forward_labeled(x_l, y_l)
                 loss_sam_sup = sam_ce_dice_loss(sam_l["sam_prob"], y_l, self.num_classes, self.ignore_index)
@@ -1056,6 +1064,26 @@ class SAGESAMR6Trainer:
             stage_weights, prior_feedback_logs = self._apply_student_prior_feedback(iteration, student_w_prob, stage_weights)
             out_s1 = self.student(x_u_s1, return_features=True)
             out_s2 = self.student(x_u_s2, return_features=True, feature_dropout="complementary")
+            copy_paste_cfg = self.config.get("copy_paste", {})
+            copy_paste_interval = max(1, int(copy_paste_cfg.get("interval", 1)))
+            copy_paste_should_run = (
+                bool(copy_paste_cfg.get("enabled", False))
+                and iteration >= int(copy_paste_cfg.get("start_iter", self.config.get("r6", {}).get("foreground_grounding_start", 0)))
+                and iteration % copy_paste_interval == 0
+            )
+            if copy_paste_should_run:
+                mixed_cp, target_cp, mask_cp, copy_paste_stats = build_labeled_foreground_copy_paste(
+                    x_l,
+                    y_l,
+                    x_u_s1.detach(),
+                    foreground_classes=self.config.get("pseudo", {}).get("foreground_classes"),
+                    ignore_index=self.ignore_index,
+                    min_foreground_ratio=float(copy_paste_cfg.get("min_foreground_ratio", 0.0)),
+                    max_foreground_ratio=float(copy_paste_cfg.get("max_foreground_ratio", 1.0)),
+                )
+                if bool(mask_cp.any()):
+                    logits_cp = self.student(mixed_cp)
+                    loss_copy_paste, _ = supervised_loss(logits_cp, target_cp, self.num_classes, self.ignore_index)
             if stage_weights["correlation"] > 0.0 and float(pseudo_cfg.get("correlation_weight", 0.0)) > 0.0 and out_s1.get("fusion_feature") is not None:
                 sam_shape = targets.get("sam_boundary")
                 if sam_shape is None and sam_u.get("valid"):
@@ -1083,6 +1111,10 @@ class SAGESAMR6Trainer:
                 self._dual_consistency_loss(out_s1, targets) + self._dual_consistency_loss(out_s2, targets)
             )
             ramp = min(1.0, iteration / max(1, int(self.config["train"].get("unsup_ramp_iterations", 1))))
+            if copy_paste_should_run:
+                cp_ramp_denom = max(1, int(copy_paste_cfg.get("ramp_iterations", self.config["train"].get("unsup_ramp_iterations", 1))))
+                cp_ramp = min(1.0, max(0, iteration - int(copy_paste_cfg.get("start_iter", 0)) + 1) / cp_ramp_denom)
+                copy_paste_effective_weight = cp_ramp * float(copy_paste_cfg.get("weight", 0.0))
             prior_feedback_cfg = self.config.get("prior_feedback", {})
             if (
                 bool(prior_feedback_cfg.get("enabled", False))
@@ -1278,6 +1310,7 @@ class SAGESAMR6Trainer:
                 + sam_kd_effective_weight * loss_kd
                 + sam_agreement_effective_weight * loss_sam_agreement
                 + prior_feedback_effective_weight * loss_prior_feedback
+                + copy_paste_effective_weight * loss_copy_paste
             )
 
         sam_grad_norm = 0.0
@@ -1327,6 +1360,7 @@ class SAGESAMR6Trainer:
             "loss_sam_extent": float(loss_sam_extent.detach()),
             "loss_sam_agreement": float(loss_sam_agreement.detach()),
             "loss_prior_feedback": float(loss_prior_feedback.detach()),
+            "loss_copy_paste": float(loss_copy_paste.detach()),
             "loss_sam_sem": float(loss_kd.detach()),
             "unsup_weight": ramp,
             "r6_unsup_scale": float(unsup_scale),
@@ -1344,6 +1378,7 @@ class SAGESAMR6Trainer:
             "sam_agreement_effective_weight": float(sam_agreement_effective_weight),
             "sam_agreement_floor_active": 1.0 if sam_agreement_floor_active else 0.0,
             "prior_feedback_effective_weight": float(prior_feedback_effective_weight),
+            "copy_paste_effective_weight": float(copy_paste_effective_weight),
             "sam_utility_ema": float(self.sam_utility.utility_ema),
             "sam_utility_disabled": 1.0 if self.sam_utility.disabled else 0.0,
             "fast_slow_agreement": float(teacher_out["agreement"].detach()),
@@ -1361,6 +1396,7 @@ class SAGESAMR6Trainer:
             **trust_logs,
             **prior_feedback_logs,
             **prior_feedback_loss_stats,
+            **copy_paste_stats,
             **targets["stats"],
             **sup_logs,
         }

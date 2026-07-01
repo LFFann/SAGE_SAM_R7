@@ -61,6 +61,11 @@ changes the semi-supervised loop:
     guard. Foreground SSL starts at 1200 iterations, stage-1 unsupervised
     scaling is less conservative, and SAM agreement KD can become active in
     the same window where earlier R7 runs reached their best validation Dice.
+15. R7.12 adds labeled-to-unlabeled anatomical anchoring inspired by BCP.
+    Labeled foreground anatomy is pasted into unlabeled ultrasound context
+    after SSL starts, and only the pasted foreground pixels are supervised.
+    This keeps rare foreground semantics visible during unlabeled training
+    without converting SAM or teacher mistakes into dense hard labels.
 
 V100 training:
 
@@ -71,7 +76,7 @@ bash scripts/train_r7_v100_tuned.sh
 Resume or shorten:
 
 ```bash
-MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback/checkpoints/latest.pth \
+MAX_ITERATIONS=1500 RESUME=outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP/checkpoints/latest.pth \
   bash scripts/train_r7_v100_tuned.sh
 ```
 
@@ -85,6 +90,7 @@ Compare the new run with prior R7 outputs:
 
 ```bash
 python tools/compare_r7_runs.py \
+  outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback_BCP \
   outputs/SAGE_SAM_R7_3Class_V100_Tuned_PriorFeedback \
   outputs/SAGE_SAM_R7_3Class_V100_Tuned_SAMAgreeKD \
   outputs/SAGE_SAM_R7_3Class_V100_Tuned
@@ -108,6 +114,9 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `loss_prior_feedback`
 - `prior_feedback_student_fg_ratio`
 - `prior_feedback_fg_over`
+- `loss_copy_paste`
+- `copy_paste_effective_weight`
+- `copy_paste_fg_ratio`
 - `sam_verifier_score_mean`
 - `sam_prompt_valid_mean`
 - `sam_prompt_box_area_ratio_mean`
