@@ -947,6 +947,95 @@ class SAGESAMR6Trainer:
             logs[f"class_balanced_ce_weight_class{cls}"] = float(weights[cls].detach())
         return weights, logs
 
+    def _apply_ssl_class_balance(self, targets: dict) -> tuple[dict, dict[str, float]]:
+        cfg = self.config.get("losses", {}).get("ssl_class_balance", {})
+        logs = {
+            "ssl_class_balance_active": 0.0,
+            "ssl_class_balance_weight_mean": 1.0,
+            "ssl_class_balance_uncertainty_scale_mean": 1.0,
+            "ssl_class_balance_multi_candidate_ratio": 0.0,
+        }
+        if not bool(cfg.get("enabled", False)):
+            return targets, logs
+        prior_value = self.config.get("pseudo", {}).get("labeled_class_prior")
+        candidate_set = targets.get("candidate_set")
+        candidate_weight = targets.get("candidate_weight")
+        soft_target = targets.get("soft_target")
+        if prior_value is None or candidate_set is None or candidate_weight is None:
+            return targets, logs
+        if candidate_set.ndim != 4 or candidate_set.shape[1] != self.num_classes:
+            return targets, logs
+
+        device = candidate_weight.device
+        dtype = candidate_weight.dtype
+        prior = torch.as_tensor(prior_value, device=device, dtype=dtype)
+        if prior.numel() != self.num_classes:
+            return targets, logs
+        eps = float(cfg.get("eps", 1e-6))
+        prior = prior.clamp_min(eps)
+        fg_classes = [
+            int(c)
+            for c in self.config.get("pseudo", {}).get("foreground_classes", list(range(1, self.num_classes)))
+            if 0 < int(c) < self.num_classes
+        ]
+        if not fg_classes:
+            return targets, logs
+
+        class_weights = torch.ones(self.num_classes, device=device, dtype=dtype)
+        fg_prior = prior[fg_classes]
+        reference = fg_prior.mean().clamp_min(eps)
+        power = float(cfg.get("foreground_power", 0.5))
+        min_w = float(cfg.get("min_foreground_weight", 0.85))
+        max_w = float(cfg.get("max_foreground_weight", 1.25))
+        for cls in fg_classes:
+            weight = torch.pow(reference / prior[cls], power)
+            class_weights[cls] = torch.clamp(weight, min=min_w, max=max_w)
+            logs[f"ssl_class_balance_weight_class{cls}"] = float(class_weights[cls].detach())
+
+        fg_candidate = candidate_set[:, fg_classes].to(device=device).float()
+        fg_count = fg_candidate.sum(dim=1)
+        weight_channels = class_weights[fg_classes].view(1, -1, 1, 1)
+        class_factor = (fg_candidate * weight_channels).sum(dim=1) / fg_count.clamp_min(1.0)
+        class_factor = torch.where(fg_count > 0, class_factor, torch.ones_like(class_factor))
+
+        uncertainty_scale = torch.ones_like(class_factor)
+        if soft_target is not None and soft_target.shape == candidate_set.shape:
+            soft = soft_target.to(device=device, dtype=dtype).clamp_min(eps)
+            entropy = -(soft * soft.log()).sum(dim=1) / math.log(max(2, self.num_classes))
+            entropy_strength = float(cfg.get("entropy_discount", 0.20))
+            min_entropy_scale = float(cfg.get("min_entropy_scale", 0.70))
+            uncertainty_scale = (1.0 - entropy_strength * entropy).clamp(min=min_entropy_scale, max=1.0)
+
+        multi_candidate = fg_count > 1.0
+        multi_scale_value = float(cfg.get("multi_candidate_scale", 0.85))
+        multi_scale = torch.where(
+            multi_candidate,
+            class_factor.new_full(class_factor.shape, multi_scale_value),
+            torch.ones_like(class_factor),
+        )
+
+        scale = class_factor * uncertainty_scale * multi_scale
+        max_weight = float(cfg.get("max_weight", 1.25))
+        min_weight = float(cfg.get("min_weight", 0.02))
+        balanced_weight = (candidate_weight.float() * scale).clamp(min=min_weight, max=max_weight)
+        out = dict(targets)
+        out["candidate_weight"] = balanced_weight.detach()
+        out["semantic_weight"] = balanced_weight.detach()
+        stats = dict(targets.get("stats", {}))
+        stats.update(
+            {
+                "ssl_class_balance_active": 1.0,
+                "ssl_class_balance_weight_mean": float(scale.mean().detach()),
+                "ssl_class_balance_uncertainty_scale_mean": float(uncertainty_scale.mean().detach()),
+                "ssl_class_balance_multi_candidate_ratio": float(multi_candidate.float().mean().detach()),
+            }
+        )
+        for cls in fg_classes:
+            stats[f"ssl_class_balance_weight_class{cls}"] = logs[f"ssl_class_balance_weight_class{cls}"]
+        out["stats"] = stats
+        logs.update({key: float(value) for key, value in stats.items() if key.startswith("ssl_class_balance_")})
+        return out, logs
+
     @staticmethod
     def _class_trust_value(config: dict, key: str, cls: int, default: float) -> float:
         value = config.get(key, default)
@@ -1147,6 +1236,12 @@ class SAGESAMR6Trainer:
             masked_locality_stats = {"masked_locality_ratio": 0.0, "foreground_masked_ratio": 0.0}
             prior_feedback_effective_weight = 0.0
             prior_feedback_loss_stats = {}
+            ssl_class_balance_logs = {
+                "ssl_class_balance_active": 0.0,
+                "ssl_class_balance_weight_mean": 1.0,
+                "ssl_class_balance_uncertainty_scale_mean": 1.0,
+                "ssl_class_balance_multi_candidate_ratio": 0.0,
+            }
             sam_floor_scale = 1.0
             sam_floor_logs = {
                 "sam_floor_trust_conditioned": 0.0,
@@ -1218,6 +1313,7 @@ class SAGESAMR6Trainer:
                     min_weight=structure_cfg.get("correlation_min_weight", 0.15),
                 )
                 loss_corr = foreground_correlation_loss(out_s1["logits"], propagated)
+            targets, ssl_class_balance_logs = self._apply_ssl_class_balance(targets)
             ssl1 = tri_state_pseudo_supervision_loss(out_s1["logits"], targets, pseudo_cfg.get("rank_margin", 0.5))
             ssl2 = tri_state_pseudo_supervision_loss(out_s2["logits"], targets, pseudo_cfg.get("rank_margin", 0.5))
             branch_ssl = self._branch_ssl_loss(out_s1, out_s2, targets, pseudo_cfg)
@@ -1591,6 +1687,7 @@ class SAGESAMR6Trainer:
             **prompt_consistency_stats,
             **trust_logs,
             **sam_floor_logs,
+            **ssl_class_balance_logs,
             **prior_feedback_logs,
             **prior_feedback_loss_stats,
             **copy_paste_stats,

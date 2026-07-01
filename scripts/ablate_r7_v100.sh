@@ -12,7 +12,7 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:128
 CONFIG="${CONFIG:-configs/r7_3class_v100_tuned.yaml}"
 BASE_OUTPUT_DIR="${BASE_OUTPUT_DIR:-outputs/ablations_r7}"
 MAX_ITERATIONS="${MAX_ITERATIONS:-8000}"
-ABLATIONS="${ABLATIONS:-full no_sam no_prior_feedback no_copy_paste no_strong_consistency no_trust_conditioned_floor no_topology_filter no_prompt_consistency no_eval_topology no_boundary no_class_balance}"
+ABLATIONS="${ABLATIONS:-full no_sam no_prior_feedback no_copy_paste no_strong_consistency no_trust_conditioned_floor no_ssl_class_balance no_topology_filter no_prompt_consistency no_eval_topology no_boundary no_class_balance}"
 
 python tools/validate_dataset.py --config "${CONFIG}"
 
@@ -42,6 +42,10 @@ for name in ${ABLATIONS}; do
     no_trust_conditioned_floor)
       python tools/verify_real_sam.py --config "${CONFIG}"
       args+=(--opts sam.losses.trust_conditioned_floor false)
+      ;;
+    no_ssl_class_balance)
+      python tools/verify_real_sam.py --config "${CONFIG}"
+      args+=(--opts losses.ssl_class_balance.enabled false)
       ;;
     no_topology_filter)
       python tools/verify_real_sam.py --config "${CONFIG}"

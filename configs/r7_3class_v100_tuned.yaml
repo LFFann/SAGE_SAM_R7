@@ -346,6 +346,16 @@ losses:
     foreground_power: 0.50
     min_foreground_weight: 0.90
     max_foreground_weight: 1.35
+  ssl_class_balance:
+    enabled: true
+    foreground_power: 0.50
+    min_foreground_weight: 0.85
+    max_foreground_weight: 1.25
+    entropy_discount: 0.20
+    min_entropy_scale: 0.70
+    multi_candidate_scale: 0.85
+    min_weight: 0.02
+    max_weight: 1.25
 
 structure:
   use_online_relation: false

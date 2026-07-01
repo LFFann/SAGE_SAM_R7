@@ -94,6 +94,10 @@ changes the semi-supervised loop:
     for SAM KD and student-anchored SAM agreement now obey the dynamic trust
     gate, so low-support or over-wide SAM gates cannot bypass the safety
     controller and keep pushing the student after pseudo-target drift appears.
+22. R7.19 adds prior- and uncertainty-aware SSL class balancing. Unlabeled
+    set/fuzzy/rank losses reweight candidate pixels from labeled class priors
+    and down-weight high-entropy or multi-candidate regions, helping rare
+    class-2 foreground contribute to SSL without hardening noisy pseudo labels.
 
 V100 training:
 
@@ -167,6 +171,7 @@ bash scripts/ablate_r7_v100.sh
 
 It includes `no_sam`, `no_prior_feedback`, `no_copy_paste`,
 `no_strong_consistency`, `no_trust_conditioned_floor`,
+`no_ssl_class_balance`,
 `no_topology_filter`, `no_prompt_consistency`, `no_eval_topology`,
 `no_boundary`, and `no_class_balance`.
 
@@ -196,6 +201,12 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `loss_sup_boundary`
 - `loss_strong_consistency`
 - `strong_view_consistency_mask_ratio`
+- `ssl_class_balance_active`
+- `ssl_class_balance_weight_mean`
+- `ssl_class_balance_uncertainty_scale_mean`
+- `ssl_class_balance_multi_candidate_ratio`
+- `ssl_class_balance_weight_class1`
+- `ssl_class_balance_weight_class2`
 - `topology_candidate_removed_ratio`
 - `topology_candidate_removed_ratio_class1`
 - `topology_candidate_removed_ratio_class2`

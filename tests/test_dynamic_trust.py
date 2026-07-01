@@ -299,3 +299,71 @@ def test_supervised_class_weights_use_labeled_prior_without_pseudo_labels():
     assert float(weights[0]) == 0.25
     assert float(weights[2]) > float(weights[1])
     assert float(weights[2]) <= 1.35
+
+
+def test_ssl_class_balance_boosts_rare_foreground_without_hardening_targets():
+    trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
+    trainer.num_classes = 3
+    trainer.config = {
+        "pseudo": {
+            "foreground_classes": [1, 2],
+            "labeled_class_prior": [0.9900, 0.0060, 0.0030],
+        },
+        "losses": {
+            "ssl_class_balance": {
+                "enabled": True,
+                "foreground_power": 0.5,
+                "min_foreground_weight": 0.85,
+                "max_foreground_weight": 1.25,
+                "entropy_discount": 0.0,
+                "multi_candidate_scale": 1.0,
+                "min_weight": 0.02,
+                "max_weight": 1.25,
+            }
+        },
+    }
+    candidate_set = torch.zeros(1, 3, 2, 2, dtype=torch.bool)
+    candidate_set[:, 1, 0, 0] = True
+    candidate_set[:, 2, 0, 1] = True
+    candidate_set[:, 1, 1, 0] = True
+    candidate_set[:, 2, 1, 0] = True
+    candidate_weight = torch.full((1, 2, 2), 0.5)
+    soft_target = torch.zeros(1, 3, 2, 2)
+    soft_target[:, 1, 0, 0] = 1.0
+    soft_target[:, 2, 0, 1] = 1.0
+    soft_target[:, 1, 1, 0] = 0.5
+    soft_target[:, 2, 1, 0] = 0.5
+    targets = {
+        "candidate_set": candidate_set,
+        "candidate_weight": candidate_weight,
+        "semantic_weight": candidate_weight,
+        "soft_target": soft_target,
+        "stats": {},
+    }
+
+    balanced, logs = trainer._apply_ssl_class_balance(targets)
+
+    assert logs["ssl_class_balance_active"] == 1.0
+    assert logs["ssl_class_balance_weight_class2"] > logs["ssl_class_balance_weight_class1"]
+    assert balanced["candidate_weight"][0, 0, 1] > balanced["candidate_weight"][0, 0, 0]
+    assert torch.equal(balanced["candidate_set"], candidate_set)
+
+
+def test_ssl_class_balance_can_be_disabled_for_ablation():
+    trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
+    trainer.num_classes = 3
+    trainer.config = {
+        "pseudo": {"foreground_classes": [1, 2], "labeled_class_prior": [0.99, 0.006, 0.004]},
+        "losses": {"ssl_class_balance": {"enabled": False}},
+    }
+    candidate_weight = torch.full((1, 2, 2), 0.5)
+    targets = {
+        "candidate_set": torch.zeros(1, 3, 2, 2, dtype=torch.bool),
+        "candidate_weight": candidate_weight,
+        "stats": {},
+    }
+
+    balanced, logs = trainer._apply_ssl_class_balance(targets)
+
+    assert logs["ssl_class_balance_active"] == 0.0
+    assert balanced is targets
