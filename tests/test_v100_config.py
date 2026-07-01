@@ -144,6 +144,9 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert 0.10 < cfg["r6"]["stage1_unsup_max_scale"] <= 0.20
     assert 0.06 < cfg["r6"]["stage1_sam_max_scale"] <= 0.10
     assert cfg["eval"]["baseline"]["avg_dice"] > 0.760
+    assert cfg["eval"]["topology_postprocess"]["enabled"] is True
+    assert cfg["eval"]["topology_postprocess"]["max_components_per_class"] == [0, 2, 1]
+    assert cfg["eval"]["topology_postprocess"]["min_component_area"] >= 4
     assert cfg["diagnostics"]["train_visualize_every"] == 250
 
 

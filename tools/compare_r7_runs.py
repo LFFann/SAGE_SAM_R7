@@ -30,6 +30,12 @@ DEFAULT_FIELDS = [
     "loss_sup_boundary",
     "loss_strong_consistency",
     "strong_view_consistency_mask_ratio",
+    "topology_postprocess_active",
+    "topology_removed_pixel_ratio",
+    "topology_removed_ratio_class1",
+    "topology_removed_ratio_class2",
+    "topology_dropped_components_class1",
+    "topology_dropped_components_class2",
     "sam_kd_effective_weight",
     "loss_sam_kd",
     "trust_unsafe",
@@ -185,6 +191,7 @@ def summarize_run(
         "copy_paste_logged": _mean(final_window, "copy_paste_effective_weight") is not None,
         "strong_view_consistency_logged": _mean(final_window, "loss_strong_consistency") is not None,
         "supervised_boundary_logged": _mean(final_window, "loss_sup_boundary") is not None,
+        "topology_postprocess_logged": _mean([final], "topology_removed_pixel_ratio") is not None,
     }
 
     return {
@@ -214,6 +221,11 @@ def summarize_run(
         "c2_pred_to_gt_final": c2_pg_final,
         "foreground_pred_ratio_final": final.get("foreground_pred_ratio"),
         "foreground_gt_ratio_final": final.get("foreground_gt_ratio"),
+        "topology_removed_pixel_ratio_final": final.get("topology_removed_pixel_ratio"),
+        "topology_removed_ratio_class1_final": final.get("topology_removed_ratio_class1"),
+        "topology_removed_ratio_class2_final": final.get("topology_removed_ratio_class2"),
+        "topology_dropped_components_class1_final": final.get("topology_dropped_components_class1"),
+        "topology_dropped_components_class2_final": final.get("topology_dropped_components_class2"),
         "stable_within_drop_threshold": stable,
         "ssl_active_at_best": ssl_active_at_best,
         "verdict": verdict,

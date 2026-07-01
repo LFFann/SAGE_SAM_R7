@@ -31,8 +31,116 @@ def _area_stats(pred: torch.Tensor, target: torch.Tensor, num_classes: int, igno
     return valid_pixels, pred_counts, gt_counts, fp_counts, fn_counts
 
 
+def _normalize_component_caps(value, num_classes: int) -> list[int]:
+    if value is None:
+        return [0 for _ in range(num_classes)]
+    if isinstance(value, int):
+        return [0] + [max(0, int(value)) for _ in range(max(0, num_classes - 1))]
+    if isinstance(value, (list, tuple)):
+        caps = [max(0, int(v)) for v in value]
+        if len(caps) == num_classes:
+            return caps
+        if len(caps) == num_classes - 1:
+            return [0] + caps
+    raise ValueError("max_components_per_class must be an int or a list with num_classes or num_classes - 1 entries")
+
+
+def _connected_components(mask: np.ndarray, score: np.ndarray | None = None, min_area: int = 1):
+    height, width = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    components = []
+    min_area = max(1, int(min_area))
+    for y0 in range(height):
+        for x0 in range(width):
+            if visited[y0, x0] or not mask[y0, x0]:
+                continue
+            stack = [(y0, x0)]
+            visited[y0, x0] = True
+            ys = []
+            xs = []
+            while stack:
+                y, x = stack.pop()
+                ys.append(y)
+                xs.append(x)
+                for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                    if 0 <= ny < height and 0 <= nx < width and not visited[ny, nx] and mask[ny, nx]:
+                        visited[ny, nx] = True
+                        stack.append((ny, nx))
+            area = len(ys)
+            if area < min_area:
+                continue
+            if score is None:
+                comp_score = float(area)
+            else:
+                comp_score = float(score[ys, xs].sum())
+            components.append({"ys": np.asarray(ys), "xs": np.asarray(xs), "area": area, "score": comp_score})
+    components.sort(key=lambda item: (item["score"], item["area"]), reverse=True)
+    return components
+
+
+def _apply_topology_postprocess(
+    pred: torch.Tensor,
+    prob: torch.Tensor | None,
+    num_classes: int,
+    cfg: dict | None,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    if not cfg or not bool(cfg.get("enabled", False)):
+        return pred, {"topology_postprocess_active": 0.0}
+    caps = _normalize_component_caps(cfg.get("max_components_per_class"), num_classes)
+    min_area = int(cfg.get("min_component_area", 1))
+    out = pred.detach().cpu().clone()
+    prob_cpu = prob.detach().cpu() if prob is not None else None
+    total_pixels = max(1, int(out.numel()))
+    stats: dict[str, float] = {"topology_postprocess_active": 1.0}
+    removed_total = 0
+    kept_components = [0 for _ in range(num_classes)]
+    dropped_components = [0 for _ in range(num_classes)]
+    removed_pixels = [0 for _ in range(num_classes)]
+    for b in range(out.shape[0]):
+        pred_np = out[b].numpy()
+        for cls in range(1, num_classes):
+            cap = caps[cls] if cls < len(caps) else 0
+            if cap <= 0:
+                continue
+            mask = pred_np == cls
+            if not mask.any():
+                continue
+            score = prob_cpu[b, cls].numpy() if prob_cpu is not None else None
+            components = _connected_components(mask, score=score, min_area=min_area)
+            keep = components[:cap]
+            drop = components[cap:]
+            keep_mask = np.zeros_like(mask, dtype=bool)
+            for comp in keep:
+                keep_mask[comp["ys"], comp["xs"]] = True
+            drop_mask = mask & ~keep_mask
+            removed = int(drop_mask.sum())
+            if removed > 0:
+                pred_np[drop_mask] = 0
+            kept_components[cls] += len(keep)
+            dropped_components[cls] += len(drop)
+            removed_pixels[cls] += removed
+            removed_total += removed
+        out[b] = torch.from_numpy(pred_np)
+    stats["topology_removed_pixel_ratio"] = float(removed_total / total_pixels)
+    batch_size = max(1, int(out.shape[0]))
+    for cls in range(num_classes):
+        stats[f"topology_removed_ratio_class{cls}"] = float(removed_pixels[cls] / total_pixels)
+        stats[f"topology_kept_components_class{cls}"] = float(kept_components[cls] / batch_size)
+        stats[f"topology_dropped_components_class{cls}"] = float(dropped_components[cls] / batch_size)
+    return out.to(device=pred.device), stats
+
+
 @torch.no_grad()
-def evaluate(model, dataloader: DataLoader, num_classes: int, device, compute_hd95: bool = True, save_dir=None, ignore_index: int = 255):
+def evaluate(
+    model,
+    dataloader: DataLoader,
+    num_classes: int,
+    device,
+    compute_hd95: bool = True,
+    save_dir=None,
+    ignore_index: int = 255,
+    topology_postprocess: dict | None = None,
+):
     model.eval()
     device = torch.device(device)
     all_dice, all_iou, all_hd95 = [], [], []
@@ -41,6 +149,8 @@ def evaluate(model, dataloader: DataLoader, num_classes: int, device, compute_hd
     gt_area = np.zeros(num_classes, dtype=np.float64)
     fp_area = np.zeros(num_classes, dtype=np.float64)
     fn_area = np.zeros(num_classes, dtype=np.float64)
+    topology_totals: dict[str, float] = {}
+    topology_batches = 0
     rows = []
     save_dir = Path(save_dir) if save_dir else None
     if save_dir:
@@ -50,6 +160,11 @@ def evaluate(model, dataloader: DataLoader, num_classes: int, device, compute_hd
         mask = batch["mask"].to(device)
         logits = model(image)
         pred = logits.argmax(dim=1)
+        prob = logits.softmax(dim=1) if topology_postprocess and bool(topology_postprocess.get("enabled", False)) else None
+        pred, topology_stats = _apply_topology_postprocess(pred, prob, num_classes, topology_postprocess)
+        topology_batches += 1
+        for key, value in topology_stats.items():
+            topology_totals[key] = topology_totals.get(key, 0.0) + float(value)
         for i in range(pred.shape[0]):
             dice, iou = per_class_dice_iou(pred[i], mask[i], num_classes, ignore_index)
             hd = per_class_hd95(pred[i].cpu().numpy(), mask[i].cpu().numpy(), num_classes, ignore_index) if compute_hd95 else [float("nan")] * num_classes
@@ -113,6 +228,9 @@ def evaluate(model, dataloader: DataLoader, num_classes: int, device, compute_hd
         "foreground_gt_ratio": foreground_gt_ratio,
         "foreground_area_abs_error": abs(foreground_pred_ratio - foreground_gt_ratio),
     }
+    if topology_totals:
+        denom_batches = max(1, topology_batches)
+        metrics.update({key: value / denom_batches for key, value in topology_totals.items()})
     for cls in range(num_classes):
         metrics[f"class_{cls}_pred_ratio"] = pred_ratio[cls]
         metrics[f"class_{cls}_gt_ratio"] = gt_ratio[cls]

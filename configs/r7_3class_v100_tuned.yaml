@@ -364,6 +364,10 @@ eval:
   save_prediction: true
   compute_hd95: true
   exclude_background_for_avg: true
+  topology_postprocess:
+    enabled: true
+    max_components_per_class: [0, 2, 1]
+    min_component_area: 8
   baseline:
     avg_dice: 0.7601364254951477
     class_dice: [null, 0.7218010774222662, 0.7984717713624256]

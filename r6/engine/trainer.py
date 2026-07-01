@@ -1633,6 +1633,7 @@ class SAGESAMR6Trainer:
             compute_hd95=self.config.get("eval", {}).get("compute_hd95", True),
             save_dir=None,
             ignore_index=self.ignore_index,
+            topology_postprocess=self.config.get("eval", {}).get("topology_postprocess"),
         )
         metrics = self._add_baseline_gaps(metrics)
         ckpt_dir = self.output_dir / "checkpoints"

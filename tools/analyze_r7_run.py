@@ -121,6 +121,11 @@ def analyze(output_dir: Path, baseline_avg_dice: float | None = None) -> dict[st
                 "last_class_pred_to_gt_ratio": last.get("class_pred_to_gt_ratio"),
                 "last_class_underseg_ratio": last.get("class_underseg_ratio"),
                 "last_class_overseg_ratio": last.get("class_overseg_ratio"),
+                "last_topology_removed_pixel_ratio": last.get("topology_removed_pixel_ratio"),
+                "last_topology_removed_ratio_class1": last.get("topology_removed_ratio_class1"),
+                "last_topology_removed_ratio_class2": last.get("topology_removed_ratio_class2"),
+                "last_topology_dropped_components_class1": last.get("topology_dropped_components_class1"),
+                "last_topology_dropped_components_class2": last.get("topology_dropped_components_class2"),
             }
         )
         if baseline_avg_dice is not None:

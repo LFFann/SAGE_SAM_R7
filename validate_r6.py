@@ -42,7 +42,17 @@ def main():
     ds = SegmentationDataset2D(data_root, args.split, cfg["data"]["num_classes"], cfg["data"]["image_size"], cfg["data"].get("image_dir_name", "image"), cfg["data"].get("mask_dir_name", "mask"), has_mask=True, ignore_index=cfg["data"].get("ignore_index", 255))
     loader = DataLoader(ds, batch_size=cfg.get("eval", {}).get("batch_size", 1), shuffle=False)
     save_dir = Path(cfg["experiment"]["output_dir"]) / "predictions" / args.split if args.save_pred else None
-    metrics = evaluate(model, loader, cfg["data"]["num_classes"], device, cfg.get("eval", {}).get("compute_hd95", True), save_dir, cfg["data"].get("ignore_index", 255))
+    eval_cfg = cfg.get("eval", {})
+    metrics = evaluate(
+        model,
+        loader,
+        cfg["data"]["num_classes"],
+        device,
+        eval_cfg.get("compute_hd95", True),
+        save_dir,
+        cfg["data"].get("ignore_index", 255),
+        topology_postprocess=eval_cfg.get("topology_postprocess"),
+    )
     append_jsonl(Path(cfg["experiment"]["output_dir"]) / "metrics.jsonl", {"iteration": "external", "phase": args.split, **metrics})
     print(metrics)
 

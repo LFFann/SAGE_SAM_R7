@@ -36,6 +36,30 @@ class _FixedModel(torch.nn.Module):
         return logits
 
 
+class _TopologyDataset(Dataset):
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, index):
+        mask = torch.zeros(6, 6, dtype=torch.long)
+        mask[:2, :2] = 1
+        mask[:2, 4:] = 1
+        mask[4:, 2:5] = 2
+        return {"image": torch.zeros(3, 6, 6), "mask": mask, "id": "topology_case"}
+
+
+class _TopologyOverPredictModel(torch.nn.Module):
+    def forward(self, image):
+        logits = torch.zeros(image.shape[0], 3, image.shape[-2], image.shape[-1], device=image.device)
+        logits[:, 0] = 3.0
+        logits[:, 1, :2, :2] = 7.0
+        logits[:, 1, :2, 4:] = 7.0
+        logits[:, 1, 3, 0] = 5.0
+        logits[:, 2, 4:, 2:5] = 7.0
+        logits[:, 2, 0, 3] = 5.0
+        return logits
+
+
 def test_evaluator_reports_area_drift_metrics():
     metrics = evaluate(
         _FixedModel(),
@@ -49,6 +73,29 @@ def test_evaluator_reports_area_drift_metrics():
     assert metrics["class_2_pred_to_gt_ratio"] == 1.0
     assert "foreground_area_abs_error" in metrics
     assert "class_overseg_ratio" in metrics
+
+
+def test_evaluator_topology_postprocess_removes_extra_components():
+    metrics = evaluate(
+        _TopologyOverPredictModel(),
+        DataLoader(_TopologyDataset(), batch_size=1),
+        num_classes=3,
+        device="cpu",
+        compute_hd95=False,
+        topology_postprocess={
+            "enabled": True,
+            "max_components_per_class": [0, 2, 1],
+            "min_component_area": 1,
+        },
+    )
+
+    assert metrics["topology_postprocess_active"] == 1.0
+    assert metrics["topology_removed_ratio_class1"] > 0.0
+    assert metrics["topology_removed_ratio_class2"] > 0.0
+    assert metrics["topology_dropped_components_class1"] == 1.0
+    assert metrics["topology_dropped_components_class2"] == 1.0
+    assert metrics["class_1_pred_to_gt_ratio"] == 1.0
+    assert metrics["class_2_pred_to_gt_ratio"] == 1.0
 
 
 def test_diagnostic_grid_writes_png(tmp_path):
