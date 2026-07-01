@@ -154,6 +154,11 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["losses"]["ssl_class_balance"]["max_foreground_weight"] <= 1.25
     assert cfg["losses"]["ssl_class_balance"]["entropy_discount"] <= 0.25
     assert cfg["losses"]["ssl_class_balance"]["multi_candidate_scale"] <= 0.90
+    assert cfg["losses"]["foreground_prototype"]["enabled"] is True
+    assert cfg["losses"]["foreground_prototype"]["start_iter"] >= cfg["r6"]["foreground_grounding_start"]
+    assert 0.0 < cfg["losses"]["foreground_prototype"]["weight"] <= 0.04
+    assert 0.10 <= cfg["losses"]["foreground_prototype"]["temperature"] <= 0.50
+    assert cfg["losses"]["foreground_prototype"]["entropy_discount"] <= 0.25
     assert 0.0 < cfg["losses"]["supervised_boundary_weight"] <= 0.05
     assert cfg["losses"]["strong_view_consistency"]["enabled"] is True
     assert cfg["losses"]["strong_view_consistency"]["start_iter"] >= cfg["r6"]["foreground_grounding_start"]
@@ -200,6 +205,7 @@ def test_r7_launch_scripts_are_parameterized():
     assert "losses.strong_view_consistency.enabled false" in ablate_script
     assert "sam.losses.trust_conditioned_floor false" in ablate_script
     assert "losses.ssl_class_balance.enabled false" in ablate_script
+    assert "losses.foreground_prototype.enabled false" in ablate_script
     assert "pseudo.topology_candidate_filter_enabled false" in ablate_script
     assert "sam.losses.prompt_consistency_weight 0.0" in ablate_script
     assert "eval.topology_postprocess.enabled false" in ablate_script

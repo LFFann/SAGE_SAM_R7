@@ -356,6 +356,15 @@ losses:
     multi_candidate_scale: 0.85
     min_weight: 0.02
     max_weight: 1.25
+  foreground_prototype:
+    enabled: true
+    start_iter: 1200
+    ramp_iterations: 1600
+    weight: 0.025
+    temperature: 0.25
+    entropy_discount: 0.20
+    min_labeled_pixels: 8
+    min_unlabeled_pixels: 8
 
 structure:
   use_online_relation: false

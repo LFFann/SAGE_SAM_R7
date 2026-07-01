@@ -98,6 +98,11 @@ changes the semi-supervised loop:
     set/fuzzy/rank losses reweight candidate pixels from labeled class priors
     and down-weight high-entropy or multi-candidate regions, helping rare
     class-2 foreground contribute to SSL without hardening noisy pseudo labels.
+23. R7.20 adds labeled foreground prototype anchoring. Class prototypes are
+    computed from labeled foreground fusion features in each batch and used as
+    a soft semantic anchor for reliable unlabeled foreground candidates. This
+    gives class-2 a feature-level route to benefit from unlabeled data without
+    requiring SAM masks to be pixel-perfect.
 
 V100 training:
 
@@ -171,7 +176,7 @@ bash scripts/ablate_r7_v100.sh
 
 It includes `no_sam`, `no_prior_feedback`, `no_copy_paste`,
 `no_strong_consistency`, `no_trust_conditioned_floor`,
-`no_ssl_class_balance`,
+`no_ssl_class_balance`, `no_prototype_anchor`,
 `no_topology_filter`, `no_prompt_consistency`, `no_eval_topology`,
 `no_boundary`, and `no_class_balance`.
 
@@ -207,6 +212,11 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `ssl_class_balance_multi_candidate_ratio`
 - `ssl_class_balance_weight_class1`
 - `ssl_class_balance_weight_class2`
+- `loss_prototype_anchor`
+- `prototype_anchor_effective_weight`
+- `prototype_anchor_active`
+- `prototype_anchor_mask_ratio`
+- `prototype_anchor_valid_class_count`
 - `topology_candidate_removed_ratio`
 - `topology_candidate_removed_ratio_class1`
 - `topology_candidate_removed_ratio_class2`

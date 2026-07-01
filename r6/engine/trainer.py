@@ -43,6 +43,7 @@ from r6.losses.foreground_safe_kd import (
     student_anchored_sam_agreement_loss,
 )
 from r6.losses.prior_feedback import student_prior_feedback_loss
+from r6.losses.prototype_anchor import foreground_prototype_anchor_loss
 from r6.losses.sam_adapter_losses import sam_ce_dice_loss, sam_prompt_consistency_loss
 from r6.losses.tri_state_pseudo_loss import tri_state_pseudo_supervision_loss
 from r6.losses.supervised import supervised_loss
@@ -1212,6 +1213,7 @@ class SAGESAMR6Trainer:
             loss_prompt_consistency = x_l.new_tensor(0.0)
             loss_prior_feedback = x_l.new_tensor(0.0)
             loss_copy_paste = x_l.new_tensor(0.0)
+            loss_prototype_anchor = x_l.new_tensor(0.0)
             loss_relation = x_l.new_tensor(0.0)
             loss_boundary = x_l.new_tensor(0.0)
             loss_corr = x_l.new_tensor(0.0)
@@ -1256,6 +1258,14 @@ class SAGESAMR6Trainer:
                 "copy_paste_active": 0.0,
                 "copy_paste_fg_ratio": 0.0,
                 "copy_paste_kept_samples": 0.0,
+            }
+            prototype_anchor_effective_weight = 0.0
+            prototype_anchor_stats = {
+                "prototype_anchor_active": 0.0,
+                "prototype_anchor_valid_class_count": 0.0,
+                "prototype_anchor_mask_ratio": 0.0,
+                "prototype_anchor_weight_mean": 0.0,
+                "prototype_anchor_entropy_mean": 0.0,
             }
             if self.use_sam and self.mentor is not None:
                 sam_l = self.mentor.forward_labeled(x_l, y_l)
@@ -1314,6 +1324,27 @@ class SAGESAMR6Trainer:
                 )
                 loss_corr = foreground_correlation_loss(out_s1["logits"], propagated)
             targets, ssl_class_balance_logs = self._apply_ssl_class_balance(targets)
+            prototype_cfg = loss_cfg.get("foreground_prototype", {})
+            if (
+                bool(prototype_cfg.get("enabled", False))
+                and iteration >= int(prototype_cfg.get("start_iter", self.config.get("r6", {}).get("foreground_grounding_start", 0)))
+                and out_l.get("fusion_feature") is not None
+                and out_s1.get("fusion_feature") is not None
+            ):
+                loss_prototype_anchor, prototype_anchor_stats = foreground_prototype_anchor_loss(
+                    out_l["fusion_feature"],
+                    y_l,
+                    out_s1["fusion_feature"],
+                    targets,
+                    foreground_classes=self.config.get("pseudo", {}).get("foreground_classes"),
+                    temperature=float(prototype_cfg.get("temperature", 0.25)),
+                    entropy_discount=float(prototype_cfg.get("entropy_discount", 0.20)),
+                    min_labeled_pixels=int(prototype_cfg.get("min_labeled_pixels", 8)),
+                    min_unlabeled_pixels=int(prototype_cfg.get("min_unlabeled_pixels", 8)),
+                )
+                proto_ramp_denom = max(1, int(prototype_cfg.get("ramp_iterations", self.config["train"].get("unsup_ramp_iterations", 1))))
+                proto_ramp = min(1.0, max(0, iteration - int(prototype_cfg.get("start_iter", 0)) + 1) / proto_ramp_denom)
+                prototype_anchor_effective_weight = float(proto_ramp * float(prototype_cfg.get("weight", 0.0)))
             ssl1 = tri_state_pseudo_supervision_loss(out_s1["logits"], targets, pseudo_cfg.get("rank_margin", 0.5))
             ssl2 = tri_state_pseudo_supervision_loss(out_s2["logits"], targets, pseudo_cfg.get("rank_margin", 0.5))
             branch_ssl = self._branch_ssl_loss(out_s1, out_s2, targets, pseudo_cfg)
@@ -1594,6 +1625,7 @@ class SAGESAMR6Trainer:
                 + prompt_consistency_effective_weight * loss_prompt_consistency
                 + prior_feedback_effective_weight * loss_prior_feedback
                 + copy_paste_effective_weight * loss_copy_paste
+                + prototype_anchor_effective_weight * loss_prototype_anchor
             )
 
         sam_grad_norm = 0.0
@@ -1647,6 +1679,7 @@ class SAGESAMR6Trainer:
             "loss_prompt_consistency": float(loss_prompt_consistency.detach()),
             "loss_prior_feedback": float(loss_prior_feedback.detach()),
             "loss_copy_paste": float(loss_copy_paste.detach()),
+            "loss_prototype_anchor": float(loss_prototype_anchor.detach()),
             "loss_sam_sem": float(loss_kd.detach()),
             "unsup_weight": ramp,
             "r6_unsup_scale": float(unsup_scale),
@@ -1668,6 +1701,7 @@ class SAGESAMR6Trainer:
             "prompt_consistency_effective_weight": float(prompt_consistency_effective_weight),
             "prior_feedback_effective_weight": float(prior_feedback_effective_weight),
             "copy_paste_effective_weight": float(copy_paste_effective_weight),
+            "prototype_anchor_effective_weight": float(prototype_anchor_effective_weight),
             "sam_utility_ema": float(self.sam_utility.utility_ema),
             "sam_utility_disabled": 1.0 if self.sam_utility.disabled else 0.0,
             "fast_slow_agreement": float(teacher_out["agreement"].detach()),
@@ -1691,6 +1725,7 @@ class SAGESAMR6Trainer:
             **prior_feedback_logs,
             **prior_feedback_loss_stats,
             **copy_paste_stats,
+            **prototype_anchor_stats,
             **targets["stats"],
             **sup_logs,
         }
