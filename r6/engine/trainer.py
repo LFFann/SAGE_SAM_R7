@@ -846,6 +846,18 @@ class SAGESAMR6Trainer:
         )
         return float(scale), logs
 
+    @staticmethod
+    def _prior_feedback_loss_kwargs(prior_feedback_cfg: dict) -> dict:
+        return {
+            "min_class_multiplier": prior_feedback_cfg.get("min_class_prior_multiplier", 0.45),
+            "max_class_multiplier": prior_feedback_cfg.get("max_class_prior_multiplier", 1.25),
+            "min_class_floor": prior_feedback_cfg.get("min_class_foreground_floor", 0.0),
+            "max_class_floor": prior_feedback_cfg.get("max_class_foreground_floor", 0.0),
+            "over_weight": float(prior_feedback_cfg.get("over_weight", 1.0)),
+            "under_weight": float(prior_feedback_cfg.get("under_weight", 0.15)),
+            "temperature": float(prior_feedback_cfg.get("loss_temperature", 1.0)),
+        }
+
     def _apply_student_prior_feedback(self, iteration: int, student_prob: torch.Tensor | None, stage_weights: dict):
         cfg = self.config.get("prior_feedback", {})
         logs = {
@@ -1576,29 +1588,18 @@ class SAGESAMR6Trainer:
                 and iteration >= int(prior_feedback_cfg.get("start_iter", 0))
                 and self.config.get("pseudo", {}).get("labeled_class_prior") is not None
             ):
+                prior_feedback_loss_kwargs = self._prior_feedback_loss_kwargs(prior_feedback_cfg)
                 prior_loss_1, prior_stats_1 = student_prior_feedback_loss(
                     out_s1["logits"],
                     self.config["pseudo"]["labeled_class_prior"],
                     foreground_classes=self.config.get("pseudo", {}).get("foreground_classes"),
-                    min_class_multiplier=float(prior_feedback_cfg.get("min_class_prior_multiplier", 0.45)),
-                    max_class_multiplier=float(prior_feedback_cfg.get("max_class_prior_multiplier", 1.25)),
-                    min_class_floor=float(prior_feedback_cfg.get("min_class_foreground_floor", 0.0)),
-                    max_class_floor=float(prior_feedback_cfg.get("max_class_foreground_floor", 0.0)),
-                    over_weight=float(prior_feedback_cfg.get("over_weight", 1.0)),
-                    under_weight=float(prior_feedback_cfg.get("under_weight", 0.15)),
-                    temperature=float(prior_feedback_cfg.get("loss_temperature", 1.0)),
+                    **prior_feedback_loss_kwargs,
                 )
                 prior_loss_2, _ = student_prior_feedback_loss(
                     out_s2["logits"],
                     self.config["pseudo"]["labeled_class_prior"],
                     foreground_classes=self.config.get("pseudo", {}).get("foreground_classes"),
-                    min_class_multiplier=float(prior_feedback_cfg.get("min_class_prior_multiplier", 0.45)),
-                    max_class_multiplier=float(prior_feedback_cfg.get("max_class_prior_multiplier", 1.25)),
-                    min_class_floor=float(prior_feedback_cfg.get("min_class_foreground_floor", 0.0)),
-                    max_class_floor=float(prior_feedback_cfg.get("max_class_foreground_floor", 0.0)),
-                    over_weight=float(prior_feedback_cfg.get("over_weight", 1.0)),
-                    under_weight=float(prior_feedback_cfg.get("under_weight", 0.15)),
-                    temperature=float(prior_feedback_cfg.get("loss_temperature", 1.0)),
+                    **prior_feedback_loss_kwargs,
                 )
                 loss_prior_feedback = 0.5 * (prior_loss_1 + prior_loss_2)
                 prior_feedback_loss_stats = prior_stats_1

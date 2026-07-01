@@ -134,6 +134,11 @@ changes the semi-supervised loop:
     unlabeled batch, so replay pool batch size, loader tail batches, and
     labeled/unlabeled loader imbalance no longer interrupt training when the
     anatomical copy-paste branch starts.
+29. R7.26 keeps prior feedback class-wise bounds intact. Trainer-side prior
+    feedback now passes per-class multipliers and foreground floors through to
+    the loss instead of forcing them to scalar floats, so class-specific
+    ceilings such as `[0.0, 1.25, 1.15]` remain valid when prior feedback
+    activates.
 
 V100 training:
 

@@ -109,6 +109,28 @@ def test_stable_validation_score_penalizes_class_gap_and_area_drift():
     assert logs["stable_pred_ratio_penalty"] > 0.0
 
 
+def test_prior_feedback_loss_kwargs_preserve_classwise_bounds():
+    kwargs = SAGESAMR6Trainer._prior_feedback_loss_kwargs(
+        {
+            "min_class_prior_multiplier": [0.0, 0.45, 0.50],
+            "max_class_prior_multiplier": [0.0, 1.25, 1.15],
+            "min_class_foreground_floor": [0.0, 0.001, 0.001],
+            "max_class_foreground_floor": [0.0, 0.0, 0.0],
+            "over_weight": 1,
+            "under_weight": 0.15,
+            "loss_temperature": 0.70,
+        }
+    )
+
+    assert kwargs["min_class_multiplier"] == [0.0, 0.45, 0.50]
+    assert kwargs["max_class_multiplier"] == [0.0, 1.25, 1.15]
+    assert kwargs["min_class_floor"] == [0.0, 0.001, 0.001]
+    assert kwargs["max_class_floor"] == [0.0, 0.0, 0.0]
+    assert kwargs["over_weight"] == 1.0
+    assert kwargs["under_weight"] == 0.15
+    assert kwargs["temperature"] == 0.70
+
+
 def test_copy_paste_source_batch_replays_missing_foreground_class():
     trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
     trainer.num_classes = 3
