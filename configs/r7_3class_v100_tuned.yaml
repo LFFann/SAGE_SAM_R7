@@ -295,6 +295,12 @@ pseudo:
   sam_disagreement_score_scale: 0.0
   sam_disagreement_min_score: 0.01
   sam_disagreement_background_floor: 0.20
+  topology_candidate_filter_enabled: true
+  topology_filter_start: 1200
+  topology_filter_interval: 1
+  topology_max_components_per_class: [0, 2, 1]
+  topology_min_component_area: 8
+  topology_filter_demote_to_background: false
   min_foreground_score: 0.01
   min_fg_pixels_per_class_ratio: [0.0, 0.0040, 0.0030]
   max_background_hard_ratio: 0.35

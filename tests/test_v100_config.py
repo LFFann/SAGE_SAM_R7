@@ -85,6 +85,11 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["pseudo"]["sam_disagreement_support_max"] <= 0.04
     assert cfg["pseudo"]["sam_disagreement_verifier_max"] <= 0.55
     assert cfg["pseudo"]["sam_disagreement_teacher_max"] <= 0.42
+    assert cfg["pseudo"]["topology_candidate_filter_enabled"] is True
+    assert cfg["pseudo"]["topology_filter_start"] >= cfg["r6"]["foreground_grounding_start"]
+    assert cfg["pseudo"]["topology_max_components_per_class"] == [0, 2, 1]
+    assert cfg["pseudo"]["topology_min_component_area"] >= 4
+    assert cfg["pseudo"]["topology_filter_demote_to_background"] is False
     assert cfg["sam"]["prompt"]["use_point_prompt"] is False
     assert cfg["sam"]["prompt"]["max_box_area_ratio"] <= 0.12
     assert cfg["sam"]["prompt"]["fallback_box_half_size"] <= 0.035

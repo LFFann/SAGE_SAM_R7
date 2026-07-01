@@ -452,6 +452,56 @@ def test_r7_sam_disagreement_suppression_removes_unsupported_soft_foreground():
     assert targets["candidate_set"][:, 1].sum() == 0
 
 
+def test_r7_topology_candidate_filter_caps_pseudo_components():
+    cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
+    cal.teacher_q = torch.tensor([0.50, 0.50, 0.50])
+    teacher_prob = torch.zeros((1, 3, 10, 10))
+    teacher_prob[:, 0] = 0.96
+    teacher_prob[:, 1] = 0.02
+    teacher_prob[:, 2] = 0.02
+    c1_regions = [((0, 2), (0, 2), 0.75), ((0, 2), (6, 8), 0.70), ((6, 8), (0, 2), 0.55)]
+    c2_regions = [((4, 6), (4, 6), 0.74), ((7, 9), (7, 9), 0.50)]
+    for yr, xr, score in c1_regions:
+        teacher_prob[:, 0, yr[0] : yr[1], xr[0] : xr[1]] = 0.20
+        teacher_prob[:, 1, yr[0] : yr[1], xr[0] : xr[1]] = score
+        teacher_prob[:, 2, yr[0] : yr[1], xr[0] : xr[1]] = 0.05
+    for yr, xr, score in c2_regions:
+        teacher_prob[:, 0, yr[0] : yr[1], xr[0] : xr[1]] = 0.20
+        teacher_prob[:, 1, yr[0] : yr[1], xr[0] : xr[1]] = 0.05
+        teacher_prob[:, 2, yr[0] : yr[1], xr[0] : xr[1]] = score
+
+    targets = build_set_valued_targets(
+        {"mean_prob": teacher_prob},
+        None,
+        cal,
+        {
+            "_iteration": 1500,
+            "foreground_classes": [1, 2],
+            "min_teacher_confidence": 0.50,
+            "max_candidate_set_size": 2,
+            "topology_candidate_filter_enabled": True,
+            "topology_filter_start": 1200,
+            "topology_max_components_per_class": [0, 2, 1],
+            "topology_min_component_area": 1,
+            "collapse_sentinel_enabled": False,
+            "recover_empty_candidates": False,
+            "bounded_empty_candidate_recovery": False,
+            "bounded_foreground_candidates": False,
+            "bounded_safe_negative": False,
+        },
+    )
+
+    stats = targets["stats"]
+    assert stats["topology_candidate_filter_active"] == 1.0
+    assert stats["topology_candidate_dropped_components_class1"] == 1.0
+    assert stats["topology_candidate_dropped_components_class2"] == 1.0
+    assert targets["candidate_set"][:, 1, 0:2, 0:2].any()
+    assert targets["candidate_set"][:, 1, 0:2, 6:8].any()
+    assert not targets["candidate_set"][:, 1, 6:8, 0:2].any()
+    assert targets["candidate_set"][:, 2, 4:6, 4:6].any()
+    assert not targets["candidate_set"][:, 2, 7:9, 7:9].any()
+
+
 def test_r6_collapse_sentinel_blocks_background_takeover_and_forces_fg_candidates():
     cal = PromptReliabilityCalibrator(3, min_pixels_per_class=1, use_soft_gate=True)
     cal.teacher_q = torch.tensor([0.50, 0.50, 0.50])

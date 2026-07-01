@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import torch
 
 from .foreground_participation_controller import apply_foreground_budget
@@ -63,6 +64,50 @@ def _class_value(config: dict, key: str, cls: int, default: float) -> float:
             return float(value[cls])
         return float(value[-1]) if value else float(default)
     return float(value)
+
+
+def _normalize_component_caps(value, num_classes: int) -> list[int]:
+    if value is None:
+        return [0 for _ in range(num_classes)]
+    if isinstance(value, int):
+        return [0] + [max(0, int(value)) for _ in range(max(0, num_classes - 1))]
+    if isinstance(value, (list, tuple)):
+        caps = [max(0, int(v)) for v in value]
+        if len(caps) == num_classes:
+            return caps
+        if len(caps) == num_classes - 1:
+            return [0] + caps
+    raise ValueError("topology_max_components_per_class must be an int or a class-wise list")
+
+
+def _connected_components_np(mask: np.ndarray, score: np.ndarray | None = None, min_area: int = 1):
+    height, width = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    components = []
+    min_area = max(1, int(min_area))
+    for y0 in range(height):
+        for x0 in range(width):
+            if visited[y0, x0] or not mask[y0, x0]:
+                continue
+            stack = [(y0, x0)]
+            visited[y0, x0] = True
+            ys = []
+            xs = []
+            while stack:
+                y, x = stack.pop()
+                ys.append(y)
+                xs.append(x)
+                for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                    if 0 <= ny < height and 0 <= nx < width and not visited[ny, nx] and mask[ny, nx]:
+                        visited[ny, nx] = True
+                        stack.append((ny, nx))
+            area = len(ys)
+            if area < min_area:
+                continue
+            comp_score = float(area) if score is None else float(score[ys, xs].sum())
+            components.append({"ys": np.asarray(ys), "xs": np.asarray(xs), "area": area, "score": comp_score})
+    components.sort(key=lambda item: (item["score"], item["area"]), reverse=True)
+    return components
 
 
 def _align_teacher_to_labeled_prior(teacher_prob: torch.Tensor, config: dict) -> tuple[torch.Tensor, dict]:
@@ -189,6 +234,85 @@ def _cap_foreground_candidate_set(
     ceiling_stats["empty_candidate_after_ceiling_ratio"] = float((candidate_set.sum(dim=1) == 0).float().mean().detach())
     ceiling_stats.update(_foreground_participation_stats(singleton_label, singleton_mask, candidate_set, ambiguous_mask, fg_classes))
     return candidate_set, singleton_label, singleton_mask, ambiguous_mask, ceiling_stats
+
+
+def _apply_topology_candidate_filter(
+    candidate_set: torch.Tensor,
+    singleton_label: torch.Tensor,
+    singleton_mask: torch.Tensor,
+    ambiguous_mask: torch.Tensor,
+    foreground_score: torch.Tensor,
+    teacher_prob: torch.Tensor,
+    fg_classes: list[int],
+    config: dict,
+    iter_now: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+    stats: dict[str, float] = {"topology_candidate_filter_active": 0.0}
+    if not bool(config.get("topology_candidate_filter_enabled", False)):
+        return candidate_set, singleton_label, singleton_mask, ambiguous_mask, stats
+    start_iter = int(config.get("topology_filter_start", config.get("foreground_grounding_start", 0)))
+    interval = max(1, int(config.get("topology_filter_interval", 1)))
+    if iter_now < start_iter or iter_now % interval != 0:
+        return candidate_set, singleton_label, singleton_mask, ambiguous_mask, stats
+
+    caps = _normalize_component_caps(config.get("topology_max_components_per_class"), candidate_set.shape[1])
+    min_area = int(config.get("topology_min_component_area", 1))
+    demote_to_background = bool(config.get("topology_filter_demote_to_background", False))
+    bg_min_conf = float(config.get("topology_filter_background_min_confidence", config.get("background_candidate_min_confidence", 0.70)))
+    stats = {"topology_candidate_filter_active": 1.0}
+    total_pixels = max(1, int(candidate_set.shape[0] * candidate_set.shape[2] * candidate_set.shape[3]))
+    removed_total = 0
+    kept_components = [0 for _ in range(candidate_set.shape[1])]
+    dropped_components = [0 for _ in range(candidate_set.shape[1])]
+    removed_pixels = [0 for _ in range(candidate_set.shape[1])]
+    device = candidate_set.device
+
+    for bidx in range(candidate_set.shape[0]):
+        for cls in fg_classes:
+            if not (0 < cls < candidate_set.shape[1]):
+                continue
+            cap = caps[cls] if cls < len(caps) else 0
+            if cap <= 0:
+                continue
+            mask_np = candidate_set[bidx, cls].detach().cpu().numpy().astype(bool)
+            if not mask_np.any():
+                continue
+            score_np = foreground_score[bidx, cls].detach().cpu().numpy()
+            components = _connected_components_np(mask_np, score=score_np, min_area=min_area)
+            keep = components[:cap]
+            drop = components[cap:]
+            keep_np = np.zeros_like(mask_np, dtype=bool)
+            for comp in keep:
+                keep_np[comp["ys"], comp["xs"]] = True
+            drop_np = mask_np & ~keep_np
+            removed = int(drop_np.sum())
+            kept_components[cls] += len(keep)
+            dropped_components[cls] += len(drop)
+            removed_pixels[cls] += removed
+            removed_total += removed
+            if removed <= 0:
+                continue
+            drop_mask = torch.as_tensor(drop_np, device=device, dtype=torch.bool)
+            candidate_set[bidx, cls] = candidate_set[bidx, cls] & ~drop_mask
+            dropped_hard = drop_mask & singleton_mask[bidx] & (singleton_label[bidx] == cls)
+            if int(dropped_hard.sum()) > 0:
+                singleton_mask[bidx] = singleton_mask[bidx] & ~dropped_hard
+            ambiguous_mask[bidx] = ambiguous_mask[bidx] & ~drop_mask
+            if demote_to_background:
+                bg_mask = drop_mask & (teacher_prob[bidx, 0] >= bg_min_conf)
+                if int(bg_mask.sum()) > 0:
+                    candidate_set[bidx, 0] = candidate_set[bidx, 0] | bg_mask
+                    singleton_label[bidx] = torch.where(bg_mask, torch.zeros_like(singleton_label[bidx]), singleton_label[bidx])
+                    singleton_mask[bidx] = singleton_mask[bidx] | bg_mask
+
+    stats["topology_candidate_removed_ratio"] = float(removed_total / total_pixels)
+    batch_size = max(1, int(candidate_set.shape[0]))
+    for cls in range(candidate_set.shape[1]):
+        stats[f"topology_candidate_removed_ratio_class{cls}"] = float(removed_pixels[cls] / total_pixels)
+        stats[f"topology_candidate_kept_components_class{cls}"] = float(kept_components[cls] / batch_size)
+        stats[f"topology_candidate_dropped_components_class{cls}"] = float(dropped_components[cls] / batch_size)
+    ambiguous_mask = ambiguous_mask & (candidate_set.sum(dim=1) > 0) & ~singleton_mask
+    return candidate_set, singleton_label, singleton_mask, ambiguous_mask, stats
 
 
 def _cap_safe_negative_set(
@@ -622,6 +746,17 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         fg_classes=fg_classes,
         config=config,
     )
+    candidate_set, singleton_label, singleton_mask, ambiguous_mask, topology_filter_stats = _apply_topology_candidate_filter(
+        candidate_set=candidate_set,
+        singleton_label=singleton_label,
+        singleton_mask=singleton_mask,
+        ambiguous_mask=ambiguous_mask,
+        foreground_score=torch.maximum(foreground_score, teacher_prob * candidate_set.float()),
+        teacher_prob=teacher_prob,
+        fg_classes=fg_classes,
+        config=config,
+        iter_now=iter_now,
+    )
     has_fg_candidate = candidate_set[:, 1:].any(dim=1) if num_classes > 1 else torch.zeros_like(teacher_label, dtype=torch.bool)
     ambiguous_mask = ambiguous_mask & (candidate_set.sum(dim=1) > 0)
     conflict_mask = (teacher_label == 0) & has_fg_candidate & ~reliable_background
@@ -793,6 +928,7 @@ def build_foreground_safe_targets(teacher_out: dict, sam_out: dict | None, calib
         **prior_alignment_stats,
         **sam_guided_stats,
         **sam_disagreement_stats,
+        **topology_filter_stats,
         "sam_guided_candidate_ratio": float(sam_guided_mask.float().mean().detach()),
         "sam_guided_weight_mean": float(sam_guided_weight.mean().detach()),
         "sam_disagreement_suppressed_ratio": float(sam_disagreement_mask.float().mean().detach()),

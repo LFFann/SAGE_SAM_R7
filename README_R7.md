@@ -78,11 +78,13 @@ changes the semi-supervised loop:
     unlabeled views are required to agree only inside candidate or structural
     regions, borrowing the weak-to-strong/dual-view idea from UniMatch while
     preserving R7's SAM verifier and prior-feedback safety gates.
-19. R7.16 adds anatomy-topology constrained evaluation. Validation and test
-    outputs can keep at most two class-1 connected components and one class-2
-    connected component, matching the prompt cardinality prior and recording
-    how many extra predicted components were removed. This diagnoses whether
-    late Dice loss is caused by anatomically invalid foreground over-expansion.
+19. R7.16 adds anatomy-topology constrained pseudo-labeling and evaluation.
+    Unlabeled pseudo-targets can keep at most two class-1 connected components
+    and one class-2 connected component before SSL losses are applied, and
+    validation/test use the same topology prior as a deploy-time postprocess.
+    Both stages record how many extra predicted or pseudo-labeled components
+    were removed, diagnosing whether late Dice loss is caused by anatomically
+    invalid foreground over-expansion.
 
 V100 training:
 
@@ -164,6 +166,11 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `loss_sup_boundary`
 - `loss_strong_consistency`
 - `strong_view_consistency_mask_ratio`
+- `topology_candidate_removed_ratio`
+- `topology_candidate_removed_ratio_class1`
+- `topology_candidate_removed_ratio_class2`
+- `topology_candidate_dropped_components_class1`
+- `topology_candidate_dropped_components_class2`
 - `topology_removed_pixel_ratio`
 - `topology_removed_ratio_class1`
 - `topology_removed_ratio_class2`
