@@ -85,6 +85,11 @@ changes the semi-supervised loop:
     Both stages record how many extra predicted or pseudo-labeled components
     were removed, diagnosing whether late Dice loss is caused by anatomically
     invalid foreground over-expansion.
+20. R7.17 adds low-cost SAM prompt consistency regularization. Inspired by
+    CPC-SAM/CPAC-SAM prompt-consistency ideas, the trainable prompt generator
+    is regularized against trusted SAM/teacher foreground support from the
+    same SAM forward pass, avoiding a second expensive SAM call while reducing
+    prompt drift in sparse ultrasound foreground regions.
 
 V100 training:
 
@@ -180,6 +185,10 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `sam_prompt_valid_mean`
 - `sam_prompt_box_area_ratio_mean`
 - `sam_prompt_component_count_class1`
+- `loss_prompt_consistency`
+- `prompt_consistency_effective_weight`
+- `prompt_consistency_mask_ratio`
+- `prompt_consistency_abs_gap`
 - `sam_kd_raw_effective_weight`
 - `sam_kd_effective_weight`
 - `sam_kd_floor_active`

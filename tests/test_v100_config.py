@@ -106,6 +106,10 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["sam"]["losses"]["sam_agreement_min_support"] <= 0.06
     assert cfg["sam"]["losses"]["sam_agreement_min_verifier"] >= 0.45
     assert cfg["sam"]["losses"]["sam_agreement_min_effective_weight"] >= 0.001
+    assert 0.0 < cfg["sam"]["losses"]["prompt_consistency_weight"] <= 0.02
+    assert cfg["sam"]["losses"]["prompt_consistency_start"] >= cfg["r6"]["foreground_grounding_start"]
+    assert 0.40 <= cfg["sam"]["losses"]["prompt_consistency_target_mix"] <= 0.65
+    assert cfg["sam"]["losses"]["prompt_consistency_min_support"] >= 0.04
     assert cfg["trust"]["max_candidate_foreground_ratio"] <= 0.25
     assert cfg["trust"]["min_candidate_foreground_ratio"] <= 0.025
     assert cfg["trust"]["prior_calibrated_min_foreground"] is True

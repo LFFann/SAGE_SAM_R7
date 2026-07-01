@@ -90,6 +90,13 @@ def _window_summary(rows: list[dict[str, Any]], lo: int, hi: int) -> dict[str, A
         "sam_prompt_component_count_mean",
         "sam_prompt_component_count_class1",
         "sam_prompt_component_count_class2",
+        "loss_prompt_consistency",
+        "prompt_consistency_effective_weight",
+        "prompt_consistency_mask_ratio",
+        "prompt_consistency_weight_mean",
+        "prompt_consistency_abs_gap",
+        "prompt_consistency_prompt_fg_mean",
+        "prompt_consistency_target_fg_mean",
     ]
     return {"range": [lo, hi], "rows": len(win), **{key: _mean(win, key) for key in keys}}
 

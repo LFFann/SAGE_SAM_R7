@@ -6,6 +6,7 @@ from r6.losses.boundary_losses import boundary_bce_loss
 from r6.losses.consistency import strong_view_consistency_loss
 from r6.losses.foreground_safe_kd import sam_guided_extent_kd_loss, student_anchored_sam_agreement_loss
 from r6.losses.prior_feedback import student_prior_feedback_loss
+from r6.losses.sam_adapter_losses import sam_prompt_consistency_loss
 from r6.losses.set_valued_losses import rank_margin_loss, safe_negative_loss, set_cross_entropy_loss, singleton_ce_loss
 from r6.losses.supervised import supervised_loss
 from r6.ssl.boundary_targets import build_boundary_target
@@ -95,6 +96,49 @@ def test_student_anchored_sam_agreement_loss_ignores_unsupported_sam():
 
     assert float(loss.detach()) == 0.0
     assert stats["sam_agreement_gate_ratio"] == 0.0
+
+
+def test_sam_prompt_consistency_trains_soft_prompt_only():
+    soft_prompt = torch.full((1, 2, 2, 2), 0.20, requires_grad=True)
+    sam_prob = torch.full((1, 3, 2, 2), 0.05, requires_grad=True)
+    sam_prob.data[:, 0] = 0.10
+    sam_prob.data[:, 1] = 0.80
+    sam_prob.data[:, 2] = 0.10
+    teacher_prob = torch.full((1, 3, 2, 2), 0.05)
+    teacher_prob[:, 0] = 0.15
+    teacher_prob[:, 1] = 0.75
+    teacher_prob[:, 2] = 0.10
+    gate = torch.ones(1, 2, 2, 2)
+    prompt_valid = torch.tensor([[1.0, 1.0, 0.0]])
+
+    loss, stats = sam_prompt_consistency_loss(
+        soft_prompt,
+        sam_prob,
+        teacher_prob=teacher_prob,
+        gate=gate,
+        prompt_valid=prompt_valid,
+        target_mix=0.50,
+    )
+
+    assert torch.isfinite(loss)
+    assert float(loss.detach()) > 0.0
+    assert stats["prompt_consistency_active"] == 1.0
+    assert stats["prompt_consistency_mask_ratio"] == 0.5
+    loss.backward()
+    assert soft_prompt.grad is not None
+    assert soft_prompt.grad.abs().sum() > 0
+    assert sam_prob.grad is None
+
+
+def test_sam_prompt_consistency_empty_gate_is_zero():
+    soft_prompt = torch.full((1, 2, 2, 2), 0.20, requires_grad=True)
+    sam_prob = torch.full((1, 3, 2, 2), 1.0 / 3.0)
+    gate = torch.zeros(1, 2, 2, 2)
+
+    loss, stats = sam_prompt_consistency_loss(soft_prompt, sam_prob, gate=gate)
+
+    assert float(loss.detach()) == 0.0
+    assert stats["prompt_consistency_active"] == 0.0
 
 
 def test_student_prior_feedback_loss_is_zero_inside_prior_band():

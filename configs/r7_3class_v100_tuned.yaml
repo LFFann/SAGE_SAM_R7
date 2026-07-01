@@ -119,6 +119,11 @@ sam:
     sam_agreement_min_effective_weight: 0.0010
     sam_agreement_min_effective_after: 1200
     sam_agreement_min_effective_gate_ratio: 0.003
+    prompt_consistency_weight: 0.012
+    prompt_consistency_start: 1200
+    prompt_consistency_ramp_iterations: 1600
+    prompt_consistency_target_mix: 0.55
+    prompt_consistency_min_support: 0.04
     sam_boundary_weight: 0.02
     sam_relation_weight: 0.00
 

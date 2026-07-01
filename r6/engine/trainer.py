@@ -43,7 +43,7 @@ from r6.losses.foreground_safe_kd import (
     student_anchored_sam_agreement_loss,
 )
 from r6.losses.prior_feedback import student_prior_feedback_loss
-from r6.losses.sam_adapter_losses import sam_ce_dice_loss
+from r6.losses.sam_adapter_losses import sam_ce_dice_loss, sam_prompt_consistency_loss
 from r6.losses.tri_state_pseudo_loss import tri_state_pseudo_supervision_loss
 from r6.losses.supervised import supervised_loss
 from r6.models.dual_temporal_teacher import DualTemporalTeacher
@@ -1080,6 +1080,7 @@ class SAGESAMR6Trainer:
             loss_kd = x_l.new_tensor(0.0)
             loss_sam_extent = x_l.new_tensor(0.0)
             loss_sam_agreement = x_l.new_tensor(0.0)
+            loss_prompt_consistency = x_l.new_tensor(0.0)
             loss_prior_feedback = x_l.new_tensor(0.0)
             loss_copy_paste = x_l.new_tensor(0.0)
             loss_relation = x_l.new_tensor(0.0)
@@ -1094,6 +1095,15 @@ class SAGESAMR6Trainer:
             sam_agreement_weight_mean = 0.0
             sam_agreement_effective_weight = 0.0
             sam_agreement_floor_active = False
+            prompt_consistency_effective_weight = 0.0
+            prompt_consistency_stats = {
+                "prompt_consistency_active": 0.0,
+                "prompt_consistency_mask_ratio": 0.0,
+                "prompt_consistency_weight_mean": 0.0,
+                "prompt_consistency_abs_gap": 0.0,
+                "prompt_consistency_prompt_fg_mean": 0.0,
+                "prompt_consistency_target_fg_mean": 0.0,
+            }
             masked_locality_stats = {"masked_locality_ratio": 0.0, "foreground_masked_ratio": 0.0}
             prior_feedback_effective_weight = 0.0
             prior_feedback_loss_stats = {}
@@ -1310,6 +1320,32 @@ class SAGESAMR6Trainer:
                     )
                     sam_agreement_gate_ratio = float(sam_agreement_stats["sam_agreement_gate_ratio"])
                     sam_agreement_weight_mean = float(sam_agreement_stats["sam_agreement_weight_mean"])
+                prompts = sam_u.get("prompts")
+                soft_prompt = prompts.get("soft_prompt") if isinstance(prompts, dict) else None
+                prompt_consistency_weight_cfg = float(sam_loss_cfg.get("prompt_consistency_weight", 0.0))
+                prompt_consistency_start = int(
+                    sam_loss_cfg.get(
+                        "prompt_consistency_start",
+                        self.config.get("r6", {}).get("foreground_grounding_start", 0),
+                    )
+                )
+                if soft_prompt is not None and prompt_consistency_weight_cfg > 0.0 and iteration >= prompt_consistency_start:
+                    prompt_support_min = float(sam_loss_cfg.get("prompt_consistency_min_support", 0.04))
+                    prompt_gate = targets["candidate_set"][:, 1:].float()
+                    if targets.get("sam_support") is not None and targets["sam_support"].shape[1] > 1:
+                        prompt_gate = torch.maximum(
+                            prompt_gate,
+                            (targets["sam_support"][:, 1:] >= prompt_support_min).float(),
+                        )
+                    loss_prompt_consistency, prompt_consistency_stats = sam_prompt_consistency_loss(
+                        soft_prompt,
+                        sam_u["sam_prob"],
+                        teacher_prob=teacher_out["mean_prob"],
+                        gate=prompt_gate,
+                        prompt_valid=prompts.get("prompt_valid"),
+                        prompt_quality=sam_u.get("prompt_quality"),
+                        target_mix=float(sam_loss_cfg.get("prompt_consistency_target_mix", 0.50)),
+                    )
                 if structure_cfg.get("use_online_relation", False):
                     relation_gate = targets["structure_gate"].to(device=foreground_mask.device).bool() & foreground_mask
                     loss_relation = online_sam_student_relation_loss(
@@ -1370,6 +1406,24 @@ class SAGESAMR6Trainer:
             ):
                 sam_agreement_effective_weight = max(sam_agreement_effective_weight, sam_agreement_floor)
                 sam_agreement_floor_active = sam_agreement_effective_weight > sam_agreement_raw_effective_weight
+            prompt_consistency_weight_cfg = float(sam_loss_cfg.get("prompt_consistency_weight", 0.0))
+            prompt_consistency_start = int(
+                sam_loss_cfg.get(
+                    "prompt_consistency_start",
+                    self.config.get("r6", {}).get("foreground_grounding_start", 0),
+                )
+            )
+            if (
+                prompt_consistency_weight_cfg > 0.0
+                and iteration >= prompt_consistency_start
+                and prompt_consistency_stats.get("prompt_consistency_active", 0.0) > 0.0
+            ):
+                prompt_ramp = min(
+                    1.0,
+                    max(0, iteration - prompt_consistency_start + 1)
+                    / max(1, int(sam_loss_cfg.get("prompt_consistency_ramp_iterations", self.config["train"].get("unsup_ramp_iterations", 1)))),
+                )
+                prompt_consistency_effective_weight = float(prompt_consistency_weight_cfg * prompt_ramp)
             sam_aux_effective_scale = float(unsup_scale * sam_ssl_scale)
             non_sam_unsup_loss = (
                 loss_unsup
@@ -1391,6 +1445,7 @@ class SAGESAMR6Trainer:
                 + sam_aux_effective_scale * sam_aux_loss
                 + sam_kd_effective_weight * loss_kd
                 + sam_agreement_effective_weight * loss_sam_agreement
+                + prompt_consistency_effective_weight * loss_prompt_consistency
                 + prior_feedback_effective_weight * loss_prior_feedback
                 + copy_paste_effective_weight * loss_copy_paste
             )
@@ -1443,6 +1498,7 @@ class SAGESAMR6Trainer:
             "loss_sam_kd": float(loss_kd.detach()),
             "loss_sam_extent": float(loss_sam_extent.detach()),
             "loss_sam_agreement": float(loss_sam_agreement.detach()),
+            "loss_prompt_consistency": float(loss_prompt_consistency.detach()),
             "loss_prior_feedback": float(loss_prior_feedback.detach()),
             "loss_copy_paste": float(loss_copy_paste.detach()),
             "loss_sam_sem": float(loss_kd.detach()),
@@ -1461,6 +1517,7 @@ class SAGESAMR6Trainer:
             "sam_agreement_weight_mean": float(sam_agreement_weight_mean),
             "sam_agreement_effective_weight": float(sam_agreement_effective_weight),
             "sam_agreement_floor_active": 1.0 if sam_agreement_floor_active else 0.0,
+            "prompt_consistency_effective_weight": float(prompt_consistency_effective_weight),
             "prior_feedback_effective_weight": float(prior_feedback_effective_weight),
             "copy_paste_effective_weight": float(copy_paste_effective_weight),
             "sam_utility_ema": float(self.sam_utility.utility_ema),
@@ -1479,6 +1536,7 @@ class SAGESAMR6Trainer:
             **prompt_stats,
             **sup_weight_logs,
             **strong_consistency_stats,
+            **prompt_consistency_stats,
             **trust_logs,
             **prior_feedback_logs,
             **prior_feedback_loss_stats,
