@@ -181,6 +181,58 @@ def test_dynamic_trust_scales_sam_when_support_is_low_even_without_overgate():
     assert weights["sam"] == 0.10
 
 
+def test_sam_floor_scale_respects_trust_and_blocks_overgate():
+    trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
+
+    scale, logs = trainer._sam_floor_scale_from_trust(
+        {
+            "trust_conditioned_floor": True,
+            "floor_unsafe_scale": 0.5,
+            "floor_block_on_low_sam_support": True,
+            "floor_block_on_sam_overgate": True,
+        },
+        {
+            "trust_sam_scale": 0.1,
+            "trust_unsafe": 1.0,
+            "trust_low_sam_support": 0.0,
+            "trust_sam_overgate": 0.0,
+            "trust_sam_gate_too_wide": 0.0,
+        },
+    )
+
+    assert scale == 0.05
+    assert logs["sam_floor_trust_conditioned"] == 1.0
+    assert logs["sam_floor_unsafe"] == 1.0
+    assert logs["sam_floor_blocked"] == 0.0
+
+    blocked_scale, blocked_logs = trainer._sam_floor_scale_from_trust(
+        {"trust_conditioned_floor": True, "floor_block_on_sam_overgate": True},
+        {
+            "trust_sam_scale": 1.0,
+            "trust_unsafe": 0.0,
+            "trust_low_sam_support": 0.0,
+            "trust_sam_overgate": 0.0,
+            "trust_sam_gate_too_wide": 1.0,
+        },
+    )
+
+    assert blocked_scale == 0.0
+    assert blocked_logs["sam_floor_blocked"] == 1.0
+    assert blocked_logs["sam_floor_blocked_overgate"] == 1.0
+
+
+def test_sam_floor_scale_can_be_disabled_for_ablation():
+    trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
+
+    scale, logs = trainer._sam_floor_scale_from_trust(
+        {"trust_conditioned_floor": False},
+        {"trust_sam_scale": 0.0, "trust_low_sam_support": 1.0},
+    )
+
+    assert scale == 1.0
+    assert logs["sam_floor_trust_conditioned"] == 0.0
+
+
 def test_student_prior_feedback_downscales_unsup_when_student_foreground_drifts():
     trainer = SAGESAMR6Trainer.__new__(SAGESAMR6Trainer)
     trainer.num_classes = 3

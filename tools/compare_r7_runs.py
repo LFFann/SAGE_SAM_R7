@@ -47,6 +47,12 @@ DEFAULT_FIELDS = [
     "topology_dropped_components_class1",
     "topology_dropped_components_class2",
     "sam_kd_effective_weight",
+    "sam_kd_floor_candidate",
+    "sam_agreement_floor_candidate",
+    "sam_floor_trust_scale",
+    "sam_floor_blocked",
+    "sam_floor_blocked_low_support",
+    "sam_floor_blocked_overgate",
     "loss_sam_kd",
     "trust_unsafe",
 ]

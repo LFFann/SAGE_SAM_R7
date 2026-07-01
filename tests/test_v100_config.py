@@ -106,6 +106,10 @@ def test_r7_v100_config_uses_adapter_only_verifier_and_trust_gate():
     assert cfg["sam"]["losses"]["sam_agreement_min_support"] <= 0.06
     assert cfg["sam"]["losses"]["sam_agreement_min_verifier"] >= 0.45
     assert cfg["sam"]["losses"]["sam_agreement_min_effective_weight"] >= 0.001
+    assert cfg["sam"]["losses"]["trust_conditioned_floor"] is True
+    assert 0.0 <= cfg["sam"]["losses"]["floor_unsafe_scale"] <= 0.50
+    assert cfg["sam"]["losses"]["floor_block_on_low_sam_support"] is True
+    assert cfg["sam"]["losses"]["floor_block_on_sam_overgate"] is True
     assert 0.0 < cfg["sam"]["losses"]["prompt_consistency_weight"] <= 0.02
     assert cfg["sam"]["losses"]["prompt_consistency_start"] >= cfg["r6"]["foreground_grounding_start"]
     assert 0.40 <= cfg["sam"]["losses"]["prompt_consistency_target_mix"] <= 0.65
@@ -189,6 +193,7 @@ def test_r7_launch_scripts_are_parameterized():
     assert "prior_feedback.enabled false" in ablate_script
     assert "copy_paste.enabled false" in ablate_script
     assert "losses.strong_view_consistency.enabled false" in ablate_script
+    assert "sam.losses.trust_conditioned_floor false" in ablate_script
     assert "pseudo.topology_candidate_filter_enabled false" in ablate_script
     assert "sam.losses.prompt_consistency_weight 0.0" in ablate_script
     assert "eval.topology_postprocess.enabled false" in ablate_script

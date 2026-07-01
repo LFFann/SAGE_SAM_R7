@@ -90,6 +90,10 @@ changes the semi-supervised loop:
     is regularized against trusted SAM/teacher foreground support from the
     same SAM forward pass, avoiding a second expensive SAM call while reducing
     prompt drift in sparse ultrasound foreground regions.
+21. R7.18 adds trust-conditioned SAM loss floors. The forced minimum weights
+    for SAM KD and student-anchored SAM agreement now obey the dynamic trust
+    gate, so low-support or over-wide SAM gates cannot bypass the safety
+    controller and keep pushing the student after pseudo-target drift appears.
 
 V100 training:
 
@@ -162,8 +166,9 @@ bash scripts/ablate_r7_v100.sh
 ```
 
 It includes `no_sam`, `no_prior_feedback`, `no_copy_paste`,
-`no_strong_consistency`, `no_topology_filter`, `no_prompt_consistency`,
-`no_eval_topology`, `no_boundary`, and `no_class_balance`.
+`no_strong_consistency`, `no_trust_conditioned_floor`,
+`no_topology_filter`, `no_prompt_consistency`, `no_eval_topology`,
+`no_boundary`, and `no_class_balance`.
 
 Key diagnostics to watch in `metrics.jsonl`:
 
@@ -212,6 +217,12 @@ Key diagnostics to watch in `metrics.jsonl`:
 - `sam_kd_raw_effective_weight`
 - `sam_kd_effective_weight`
 - `sam_kd_floor_active`
+- `sam_kd_floor_candidate`
+- `sam_agreement_floor_candidate`
+- `sam_floor_trust_scale`
+- `sam_floor_blocked`
+- `sam_floor_blocked_low_support`
+- `sam_floor_blocked_overgate`
 - `sam_guided_candidate_ratio`
 - `sam_guided_weight_mean`
 - `sam_disagreement_suppressed_ratio`

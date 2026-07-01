@@ -119,6 +119,10 @@ sam:
     sam_agreement_min_effective_weight: 0.0010
     sam_agreement_min_effective_after: 1200
     sam_agreement_min_effective_gate_ratio: 0.003
+    trust_conditioned_floor: true
+    floor_unsafe_scale: 0.50
+    floor_block_on_low_sam_support: true
+    floor_block_on_sam_overgate: true
     prompt_consistency_weight: 0.012
     prompt_consistency_start: 1200
     prompt_consistency_ramp_iterations: 1600

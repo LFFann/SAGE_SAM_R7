@@ -755,6 +755,46 @@ class SAGESAMR6Trainer:
             "trust_negative_scale": trust_negative_scale,
         }
 
+    def _sam_floor_scale_from_trust(self, sam_loss_cfg: dict, trust_logs: dict) -> tuple[float, dict[str, float]]:
+        """Keep forced SAM loss floors from bypassing dynamic trust controls."""
+
+        logs = {
+            "sam_floor_trust_conditioned": 0.0,
+            "sam_floor_trust_scale": 1.0,
+            "sam_floor_blocked": 0.0,
+            "sam_floor_blocked_low_support": 0.0,
+            "sam_floor_blocked_overgate": 0.0,
+            "sam_floor_unsafe": 0.0,
+        }
+        if not bool(sam_loss_cfg.get("trust_conditioned_floor", True)):
+            return 1.0, logs
+
+        trust_sam_scale = max(0.0, min(1.0, float(trust_logs.get("trust_sam_scale", 1.0))))
+        unsafe = float(trust_logs.get("trust_unsafe", 0.0)) > 0.0
+        low_support = float(trust_logs.get("trust_low_sam_support", 0.0)) > 0.0
+        overgate = (
+            float(trust_logs.get("trust_sam_overgate", 0.0)) > 0.0
+            or float(trust_logs.get("trust_sam_gate_too_wide", 0.0)) > 0.0
+        )
+        scale = trust_sam_scale
+        if unsafe:
+            scale *= max(0.0, min(1.0, float(sam_loss_cfg.get("floor_unsafe_scale", 1.0))))
+        blocked_low_support = low_support and bool(sam_loss_cfg.get("floor_block_on_low_sam_support", True))
+        blocked_overgate = overgate and bool(sam_loss_cfg.get("floor_block_on_sam_overgate", True))
+        if blocked_low_support or blocked_overgate:
+            scale = 0.0
+        logs.update(
+            {
+                "sam_floor_trust_conditioned": 1.0,
+                "sam_floor_trust_scale": float(scale),
+                "sam_floor_blocked": 1.0 if (blocked_low_support or blocked_overgate) else 0.0,
+                "sam_floor_blocked_low_support": 1.0 if blocked_low_support else 0.0,
+                "sam_floor_blocked_overgate": 1.0 if blocked_overgate else 0.0,
+                "sam_floor_unsafe": 1.0 if unsafe else 0.0,
+            }
+        )
+        return float(scale), logs
+
     def _apply_student_prior_feedback(self, iteration: int, student_prob: torch.Tensor | None, stage_weights: dict):
         cfg = self.config.get("prior_feedback", {})
         logs = {
@@ -1107,6 +1147,15 @@ class SAGESAMR6Trainer:
             masked_locality_stats = {"masked_locality_ratio": 0.0, "foreground_masked_ratio": 0.0}
             prior_feedback_effective_weight = 0.0
             prior_feedback_loss_stats = {}
+            sam_floor_scale = 1.0
+            sam_floor_logs = {
+                "sam_floor_trust_conditioned": 0.0,
+                "sam_floor_trust_scale": 1.0,
+                "sam_floor_blocked": 0.0,
+                "sam_floor_blocked_low_support": 0.0,
+                "sam_floor_blocked_overgate": 0.0,
+                "sam_floor_unsafe": 0.0,
+            }
             copy_paste_effective_weight = 0.0
             copy_paste_stats = {
                 "copy_paste_active": 0.0,
@@ -1371,7 +1420,8 @@ class SAGESAMR6Trainer:
             sam_kd_raw_effective_weight = float(unsup_scale * sam_ssl_scale * sam_kd_loss_weight)
             sam_kd_effective_weight = sam_kd_raw_effective_weight
             sam_kd_floor_active = False
-            sam_kd_floor = float(sam_loss_cfg.get("sam_kd_min_effective_weight", 0.0))
+            sam_floor_scale, sam_floor_logs = self._sam_floor_scale_from_trust(sam_loss_cfg, trust_logs)
+            sam_kd_floor = float(sam_loss_cfg.get("sam_kd_min_effective_weight", 0.0)) * sam_floor_scale
             sam_kd_floor_after = int(
                 sam_loss_cfg.get(
                     "sam_kd_min_effective_after",
@@ -1390,7 +1440,7 @@ class SAGESAMR6Trainer:
             sam_agreement_loss_weight = float(sam_loss_cfg.get("sam_agreement_weight", 0.0))
             sam_agreement_raw_effective_weight = float(unsup_scale * sam_ssl_scale * sam_agreement_loss_weight)
             sam_agreement_effective_weight = sam_agreement_raw_effective_weight
-            sam_agreement_floor = float(sam_loss_cfg.get("sam_agreement_min_effective_weight", 0.0))
+            sam_agreement_floor = float(sam_loss_cfg.get("sam_agreement_min_effective_weight", 0.0)) * sam_floor_scale
             sam_agreement_floor_after = int(
                 sam_loss_cfg.get(
                     "sam_agreement_min_effective_after",
@@ -1512,10 +1562,12 @@ class SAGESAMR6Trainer:
             "sam_kd_loss_weight": float(sam_kd_loss_weight),
             "sam_kd_raw_effective_weight": float(sam_kd_raw_effective_weight),
             "sam_kd_effective_weight": float(sam_kd_effective_weight),
+            "sam_kd_floor_candidate": float(sam_kd_floor),
             "sam_kd_floor_active": 1.0 if sam_kd_floor_active else 0.0,
             "sam_agreement_gate_ratio": float(sam_agreement_gate_ratio),
             "sam_agreement_weight_mean": float(sam_agreement_weight_mean),
             "sam_agreement_effective_weight": float(sam_agreement_effective_weight),
+            "sam_agreement_floor_candidate": float(sam_agreement_floor),
             "sam_agreement_floor_active": 1.0 if sam_agreement_floor_active else 0.0,
             "prompt_consistency_effective_weight": float(prompt_consistency_effective_weight),
             "prior_feedback_effective_weight": float(prior_feedback_effective_weight),
@@ -1538,6 +1590,7 @@ class SAGESAMR6Trainer:
             **strong_consistency_stats,
             **prompt_consistency_stats,
             **trust_logs,
+            **sam_floor_logs,
             **prior_feedback_logs,
             **prior_feedback_loss_stats,
             **copy_paste_stats,
